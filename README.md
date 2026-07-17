@@ -4,9 +4,9 @@ Refluo is a treasury management layer for autonomous AI agents on
 Stellar/Soroban. It replaces a static funded wallet with a policy-constrained
 smart account that forecasts its own burn rate, keeps a liquid buffer sized
 to that forecast, deploys everything else to yield, and recalls funds back
-before the buffer runs dry — while a compromised or malicious agent key
-remains structurally incapable of doing anything except pay counterparties
-within pre-set limits.
+before the buffer runs dry. A compromised or malicious agent key remains
+structurally incapable of doing anything except pay counterparties within
+pre-set limits.
 
 ## Problem
 
@@ -19,12 +19,20 @@ spikes, which is either wasteful (over-funded, sitting idle) or risky
 and automatic: fund to a stated confidence level, earn yield on the rest,
 recall on a measured SLA.
 
+## Demo
+
+None yet. No agent has run against a deployed Refluo vault. Phase 0 is
+contract scaffolding only, nothing to point a demo at. First honest demo
+candidate is a testnet vault at the end of Phase 1 (an agent key paying
+via x402 within caps); this section gets a real link or recording then,
+not before.
+
 ## Status & audit
 
 Pre-audit, pre-mainnet, Phase 0 (foundations). No live deployment. Contract
 crates in `contracts/` currently expose storage and config plumbing with
-unit tests — the enforcement logic (policy decoders, oracle read algorithm,
-pause/recovery state machine) is Phase 1–4 work and is not implemented yet.
+unit tests. The enforcement logic (policy decoders, oracle read algorithm,
+pause/recovery state machine) is Phase 1-4 work, not implemented yet.
 Treat anything in this repo as scaffolding until that changes; this section
 will be updated honestly as phases land rather than describing capability
 that doesn't exist yet.
@@ -35,17 +43,17 @@ Eight on-chain contracts plus one off-chain keeper:
 
 | Contract | Role |
 |---|---|
-| `vault` | Deployment recipe on OpenZeppelin `stellar-accounts` — not a contract Refluo owns |
-| `policy-venue` | YieldVenueAllowlist — decodes and caps venue deployment calls |
-| `policy-recall` | RecallExecutor — venue-to-vault-only fund recall, rate-limited |
-| `policy-session` | SessionScope — agent hot-key expiry, caps, destination allowlist |
+| `vault` | Deployment recipe on OpenZeppelin `stellar-accounts`, not a contract Refluo owns |
+| `policy-venue` | YieldVenueAllowlist: decodes and caps venue deployment calls |
+| `policy-recall` | RecallExecutor: venue-to-vault-only fund recall, rate-limited |
+| `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
 | `oracle-router` | Dual-feed price reads with staleness gating and rate-of-change clamping |
-| `health-monitor` | Gate-seal circuit breaker — guardian or oracle-triggered pause, auto-expiring |
+| `health-monitor` | Gate-seal circuit breaker: guardian or oracle-triggered pause, auto-expiring |
 | `timelock` | propose → 24h delay → execute for risk-increasing admin actions |
 | `risk-engine` | On-chain bounds-checker: system state + tier bookkeeping, no deployment above NORMAL |
 
 On-chain contracts enforce bounds; an off-chain keeper (`keeper/`, not yet
-built) makes the decisions — burn forecasting, oracle cross-checks, rebalance
+built) makes the decisions: burn forecasting, oracle cross-checks, rebalance
 scheduling. This split keeps the audited on-chain surface small.
 
 ## Project structure
@@ -75,7 +83,7 @@ refluo/
   decomposition already matches what a policy-constrained treasury needs;
   hand-rolling `__check_auth` is how solo devs die. See `adr/0001`.
 - **On-chain enforces, off-chain decides.** Prediction math and cross-source
-  oracle corroboration live in the keeper, never on-chain — it keeps the
+  oracle corroboration live in the keeper, never on-chain. It keeps the
   audited surface to bounds-checking (caps, allowlists, staleness), not
   market analysis.
 - **USDC and XLM only in v1.** No long-tail collateral until an off-chain
@@ -86,7 +94,7 @@ refluo/
   future fee doesn't require migrating every deployed customer vault. See
   `adr/0002`.
 - **Gate-seal pause, not a bespoke freeze.** Cheap/broad trigger, lazy
-  72h auto-expiry, narrow resume — modeled on Lido's GateSeal so a
+  72h auto-expiry, narrow resume. Modeled on Lido's GateSeal, so a
   compromised guardian buys degraded yield for a bounded window, not a
   bricked treasury.
 
@@ -109,9 +117,17 @@ cargo build --release --target wasm32v1-none -p refluo-risk-engine   # example; 
 Each contract crate has unit tests covering its current surface (config
 round-trips, storage defaults, the fee ceiling check). No property tests,
 fuzz targets, or integration tests against testnet Blend/Reflector exist
-yet — those are Phase 1–5 deliverables per the test matrix, not implemented.
+yet. Those are Phase 1-5 deliverables per the test matrix, not implemented.
 Don't infer coverage from the presence of a `#[cfg(test)]` module; check
 what's actually asserted.
+
+## Monitoring
+
+None yet, correctly: there's no live system to monitor. This section stays
+empty until Phase 5, when the operator dashboard's SLA panel (Tier 0 hit
+rate, recall latency, pause count, forecaster error) goes live against real
+telemetry. Not the same gap as Demo: a dashboard spec exists internally,
+it just isn't built.
 
 ## CI/CD
 
