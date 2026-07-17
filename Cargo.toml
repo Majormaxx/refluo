@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "contracts/common",
+    "contracts/policy-venue",
+    "contracts/policy-recall",
+    "contracts/policy-session",
+    "contracts/oracle-router",
+    "contracts/health-monitor",
+    "contracts/timelock",
+    "contracts/risk-engine",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+soroban-sdk = "27.0.0"
+refluo-common = { path = "contracts/common" }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true

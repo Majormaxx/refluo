@@ -1,3 +1,9 @@
+# Internal strategy docs — never push
+Refluo_Updated_PRD.pdf
+refluo-implementation-spec.md
+refluo-remediation-roadmap.md
+refluo-prd-unified.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -74,6 +80,9 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+
+# Soroban SDK test harness output (auto-generated ledger snapshots)
+test_snapshots/
 
 # Jupyter Notebook
 .ipynb_checkpoints

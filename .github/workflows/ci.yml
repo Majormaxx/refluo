@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  wasm-build:
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy, test]
+    strategy:
+      matrix:
+        contract:
+          - policy-venue
+          - policy-recall
+          - policy-session
+          - oracle-router
+          - health-monitor
+          - timelock
+          - risk-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: build wasm
+        run: cargo build --release --target wasm32v1-none -p refluo-${{ matrix.contract }}
+      - name: wasm size budget (alarm > 64KB)
+        run: |
+          set -euo pipefail
+          f="target/wasm32v1-none/release/refluo_${{ matrix.contract }}.wasm"
+          f="${f//-/_}"
+          size=$(stat -c%s "$f")
+          echo "size: $size bytes"
+          if [ "$size" -gt 65536 ]; then
+            echo "::error::${{ matrix.contract }} wasm is ${size} bytes, over the 64KB budget"
+            exit 1
+          fi

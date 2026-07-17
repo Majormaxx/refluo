@@ -1,0 +1,22 @@
+[package]
+name = "refluo-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+# Pin to force resolver unification: soroban-env-host 27.0.0 declares
+# ed25519-dalek ">=2.0.0" (unbounded) while soroban-sdk declares "^2.1.1",
+# and without this pin cargo resolves two separate majors (2.2.0 AND 3.0.0)
+# for the same crate, and env-host's own testutils.rs breaks against 3.0.0's
+# stricter CryptoRng bound (upstream bug, not ours). Pinning here nudges the
+# whole workspace to unify on the one version that satisfies both ranges.
+ed25519-dalek = "=2.2.0"
