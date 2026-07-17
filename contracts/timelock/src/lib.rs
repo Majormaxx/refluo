@@ -1,10 +1,10 @@
 #![no_std]
 
-//! Timelock — <200 lines. propose -> 24h delay -> execute. Exempt list
-//! (direct admin, no delay): pause, resume, guardian removal, allowlist
-//! removal, risk-profile downgrade, RecallExecutor tightening — the rule
-//! is: risk-reducing actions are exempt, risk-increasing actions wait.
-//! Full spec tracked internally, not in this repo.
+//! Timelock — <200 lines. propose -> 24h delay -> execute. Admin can act
+//! immediately, no delay, on anything that only ever removes risk: pause,
+//! resume, guardian removal, allowlist removal, risk-profile downgrade,
+//! RecallExecutor tightening. Anything that could increase risk waits out
+//! the delay. Full spec tracked internally, not in this repo.
 
 use refluo_common::CommonError;
 use soroban_sdk::{

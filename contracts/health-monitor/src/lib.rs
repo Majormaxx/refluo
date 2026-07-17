@@ -1,8 +1,11 @@
 #![no_std]
 
-//! HealthMonitor — gate-seal pause. Cheap/broad trigger, lazy auto-expiry,
-//! narrow resume, hysteresis-gated auto-recovery. Modeled on Lido's
-//! GateSeal. Full spec tracked internally, not in this repo.
+//! HealthMonitor — a pause switch anyone on the guardian list can flip,
+//! that clears itself if nobody acts within the configured window, and
+//! that only an admin can reopen early. Recovery after an oracle-triggered
+//! trip requires a run of consecutive healthy readings, not just one, so
+//! it can't flap. Modeled on Lido's GateSeal. Full spec tracked
+//! internally, not in this repo.
 
 use refluo_common::CommonError;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};

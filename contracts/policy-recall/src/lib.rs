@@ -1,10 +1,12 @@
 #![no_std]
 
-//! RecallExecutor — smallest contract in the system, keep it under ~150
-//! lines. Security claim to property-test: for all inputs, funds move only
-//! venue -> vault. Keeper key compromise degrades to griefing (forced
-//! de-yield, rate-limited), never theft. Full spec tracked internally, not
-//! in this repo.
+//! RecallExecutor does one thing: move funds from an allowlisted venue
+//! back to the vault. That narrowness is the security property, not
+//! incidental — a compromised keeper key routed through this contract can
+//! only de-yield the vault (rate-limited griefing), never move a single
+//! stroop anywhere but home. Property-tested for exactly that: for all
+//! inputs, funds move only venue -> vault. Full spec tracked internally,
+//! not in this repo.
 
 use soroban_sdk::{
     auth::{Context, ContractContext},

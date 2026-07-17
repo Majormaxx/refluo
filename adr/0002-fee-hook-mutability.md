@@ -24,12 +24,13 @@ properties, implemented from the earliest scaffold:
 
 ## Why
 
-Retrofitting a fee mechanism into an already-deployed, immutable customer
-vault means a breaking migration — every existing customer would need to
-move funds to a new contract instance to enable it, which is a
-trust-destroying ask for a custody-adjacent product. Yearn and DeFindex both
-bake their fee parameter in at vault construction for the same reason. The
-hook has to exist from the first deployment even if the value is zero.
+A Soroban contract can't gain a new storage field after it's deployed
+without a migration, and asking a customer to move funds into a fresh
+contract instance just so a fee can be turned on later is not a
+conversation worth having with someone trusting you with a treasury.
+Yearn and DeFindex both solve this the same way: bake the fee field into
+the vault at construction, set it to whatever value makes sense (including
+zero) on day one, and never need a migration to change it later.
 
 Full business-model rationale (why a fee at all, what it's for, sequencing
 against other revenue) is tracked internally, not committed to this repo.

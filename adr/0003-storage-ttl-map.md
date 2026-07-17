@@ -17,9 +17,12 @@ never mid-epoch. A `last_write_epoch` value is stored in **persistent**
 storage alongside the temporary counter; if `last_write_epoch` equals the
 current epoch but the temporary key is missing (expired early or evicted),
 the read reverts as `BadState` rather than silently treating it as zero
-spend. This costs one persistent storage slot per (account, rule_id) and
-buys an unfalsifiable cap — the CertiK-class bug this closes: a
-mid-epoch-expired counter silently resetting a spending cap to zero.
+spend. The bug this closes: a temporary counter that expires or gets
+evicted mid-epoch would otherwise read back as zero, silently resetting
+whatever cap it was tracking back to unspent for the rest of that epoch.
+One extra persistent slot per (account, rule_id) is a cheap price for
+making that failure mode structurally impossible instead of hoping nobody
+finds it.
 
 Nothing in the recall path is ever allowed to archive. Weekly keeper TTL
 sweep over instance storage and hot persistent keys.
@@ -39,6 +42,8 @@ split above is not a rent-optimization choice, it's a fund-safety one.
 - Any new contract storage decision defaults to this table. A PR adding
   fund-relevant state to Temporary storage should be rejected outright.
 - The epoch fail-closed pattern (persistent `last_write_epoch` sentinel)
-  is implemented once as a shared helper in `contracts/common` and reused
-  by every policy that has an epoch cap (`policy-venue`, `policy-session`),
-  not reimplemented per-contract.
+  is the same shape in every policy that has an epoch cap (`policy-venue`,
+  `policy-session`), but implemented separately per contract rather than
+  as a shared helper — the two configs' field shapes differ enough that a
+  generic helper would cost more clarity than the ~15 duplicated lines
+  cost maintenance. Revisit if a third policy needs the same pattern.

@@ -1,23 +1,22 @@
 # Refluo
 
-Refluo is a treasury management layer for autonomous AI agents on
-Stellar/Soroban. It replaces a static funded wallet with a policy-constrained
-smart account that forecasts its own burn rate, keeps a liquid buffer sized
-to that forecast, deploys everything else to yield, and recalls funds back
-before the buffer runs dry. A compromised or malicious agent key remains
-structurally incapable of doing anything except pay counterparties within
-pre-set limits.
+Refluo gives an autonomous agent on Stellar/Soroban a funded treasury
+instead of a plain wallet. A smart-contract layer tracks how fast the
+agent spends, keeps just enough liquid on hand to cover it, and puts the
+remainder into yield until it's needed back. Every payment the agent's
+hot key can make is capped and allowlisted at the contract level, so a
+stolen or misbehaving key can drain nothing beyond what the caps allow.
 
 ## Problem
 
-Agents that pay for their own compute, API calls, and tool use need a
-treasury, not a wallet. A wallet holds a balance until it hits zero, with no
-notion of its own burn rate or any yield on idle capital. An agent operator
-is left manually funding buffers big enough to survive worst-case burn
-spikes, which is either wasteful (over-funded, sitting idle) or risky
-(under-funded, agent halts mid-task). Refluo makes that trade-off explicit
-and automatic: fund to a stated confidence level, earn yield on the rest,
-recall on a measured SLA.
+An AI agent that pays for its own API calls, compute, and tool usage
+burns money unpredictably. Point it at a plain wallet and an operator is
+stuck guessing a buffer size by hand: too much and the funds sit idle
+earning nothing, too little and the agent stalls mid-task waiting on a
+manual top-up. Refluo turns that guess into a number the agent's own
+history sets automatically, keeps everything above that number earning
+yield, and pulls funds back on a schedule tight enough that the agent
+never notices the difference.
 
 ## Demo
 
@@ -80,24 +79,28 @@ refluo/
 
 ## Decisions & trade-offs
 
-- **OZ `stellar-accounts` over hand-rolled auth.** The context-rule/policy
-  decomposition already matches what a policy-constrained treasury needs;
-  hand-rolling `__check_auth` is how solo devs die. See `adr/0001`.
-- **On-chain enforces, off-chain decides.** Prediction math and cross-source
-  oracle corroboration live in the keeper, never on-chain. It keeps the
-  audited surface to bounds-checking (caps, allowlists, staleness), not
-  market analysis.
+- **OZ `stellar-accounts` over hand-rolled auth.** A custom `__check_auth`
+  implementation is exactly the kind of code a small team gets wrong once
+  and pays for permanently; OZ's context-rule/policy model already covers
+  the shape a policy-constrained treasury needs, audited and maintained by
+  someone else. See `adr/0001`.
+- **Bounds on-chain, judgment off-chain.** Anything that requires weighing
+  evidence (burn forecasting, cross-checking oracle feeds against each
+  other) runs in the keeper. Contracts only ever check a number against a
+  limit — caps, allowlists, staleness windows — which is what keeps the
+  code worth auditing small.
 - **USDC and XLM only in v1.** No long-tail collateral until an off-chain
-  liquidity-admission pipeline exists. You cannot be exploited on an asset
-  you never touch.
+  liquidity-admission pipeline exists, so there's no asset in the system
+  thin enough for a single trade to manipulate its price.
 - **Fee hook ships now, at 0%.** `risk-engine` carries a mutable `fee_bps`
   behind a setter with a hardcoded ceiling, rather than a constant, so a
   future fee doesn't require migrating every deployed customer vault. See
   `adr/0002`.
-- **Gate-seal pause, not a bespoke freeze.** Cheap/broad trigger, lazy
-  72h auto-expiry, narrow resume. Modeled on Lido's GateSeal, so a
-  compromised guardian buys degraded yield for a bounded window, not a
-  bricked treasury.
+- **Gate-seal pause, not a bespoke freeze.** Any guardian can trigger it,
+  it self-clears after 72h if nobody acts, and resuming early needs the
+  admin threshold. Copied from Lido's GateSeal because it bounds the
+  downside of a false or malicious pause to a fixed window of missed
+  yield instead of an indefinitely frozen contract.
 - **Verify framework internals against source before writing logic against
   them.** Building the vault and policy contracts against `stellar-accounts`'
   real source (not docs or pseudocode) caught five wrong assumptions: wrong

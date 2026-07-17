@@ -1,7 +1,9 @@
 #![no_std]
 
-//! YieldVenueAllowlist — the most dangerous decoder in the system, fuzz it
-//! hardest. Full design rationale tracked internally, not in this repo.
+//! YieldVenueAllowlist decodes untrusted calldata into a spend decision,
+//! which makes its request-vector parsing the single highest-value target
+//! for fuzzing anywhere in this workspace. Full design rationale tracked
+//! internally, not in this repo.
 
 use soroban_sdk::{
     auth::{Context, ContractContext},
@@ -585,11 +587,11 @@ mod test {
 
     #[test]
     fn enforce_fails_closed_on_mid_epoch_counter_eviction() {
-        // Simulates the CertiK-class bug: a temporary counter evicted mid-
-        // epoch (TTL expiry or archival) must revert as BadState, never
-        // silently read as zero spend. We force this by writing
-        // last_write_epoch directly without a matching temp counter, the
-        // exact state an eviction would leave behind.
+        // A temporary counter evicted mid-epoch (TTL expiry or archival)
+        // must revert as BadState, never silently read as zero spend. We
+        // force this by writing last_write_epoch directly without a
+        // matching temp counter, the exact state an eviction would leave
+        // behind.
         let e = Env::default();
         e.mock_all_auths();
         let (client, smart_account, venue) = setup(&e);

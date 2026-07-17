@@ -1,12 +1,13 @@
 # vault
 
-Thin wrapper on OpenZeppelin's `stellar-accounts` (pinned `v0.7.2`):
-implements `SmartAccount` and `CustomAccountInterface` with no
-Refluo-specific auth logic — `__check_auth` delegates entirely to
-`do_check_auth`. Hand-rolling `__check_auth` is how solo devs die, and the
-framework's context-rule/policy decomposition already gives Refluo exactly
-the shape it needs. See `adr/0004` for corrections found by verifying the
-framework's real source before writing this contract.
+Thin wrapper on OpenZeppelin's `stellar-accounts` (pinned `v0.7.2`).
+Implements `SmartAccount` and `CustomAccountInterface` with no
+Refluo-specific auth logic. `__check_auth` is a one-line delegation to
+`do_check_auth`, so the actual authorization decision lives entirely in
+OZ's audited code, never in anything Refluo wrote. The framework's
+context-rule/policy decomposition already gives Refluo the shape it needs
+without adding custom logic on top. See `adr/0004` for corrections found
+by verifying the framework's real source before writing this contract.
 
 Every `SmartAccount` method is explicitly re-declared in `src/lib.rs`
 (not left to the trait's defaults) — `#[contractimpl]` only exports methods
