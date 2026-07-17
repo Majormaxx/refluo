@@ -1,9 +1,9 @@
 #![no_std]
 
 //! OracleRouter — every other Refluo module reads price through here, never
-//! feeds directly. Phase 2, BLOCKED on RedStone mainnet feed addresses /
-//! decimals / heartbeat verification — see refluo-prd-unified.md §13 (local).
-//! Full read-algorithm spec: refluo-implementation-spec.md §5 (local).
+//! feeds directly. BLOCKED on RedStone mainnet feed addresses, decimals,
+//! and heartbeat verification. Full read-algorithm spec tracked
+//! internally, not in this repo.
 
 use refluo_common::{Asset, CommonError, PriceQuote};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map};
@@ -32,7 +32,8 @@ pub struct OracleRouter;
 
 #[contractimpl]
 impl OracleRouter {
-    /// Timelock-gated in Phase 2. No admin check yet at this scaffold stage.
+    /// Will be timelock-gated once the timelock contract is integrated. No
+    /// admin check yet at this scaffold stage.
     pub fn set_config(e: Env, asset: Asset, cfg: AssetOracleConfig) {
         assert!(
             cfg.twap_periods <= 64,
@@ -48,8 +49,8 @@ impl OracleRouter {
             .ok_or(CommonError::NotInitialized)
     }
 
-    // get_price / check_and_trip: Phase 2, blocked on RedStone verification.
-    // Do not write against guessed feed addresses or decimals.
+    // get_price / check_and_trip: not yet implemented, blocked on RedStone
+    // verification. Do not write against guessed feed addresses or decimals.
 }
 
 #[allow(dead_code)]

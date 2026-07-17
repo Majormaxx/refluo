@@ -42,6 +42,7 @@ jobs:
     strategy:
       matrix:
         contract:
+          - vault
           - policy-venue
           - policy-recall
           - policy-session
@@ -55,8 +56,23 @@ jobs:
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
+      # soroban-sdk's experimental_spec_shaking_v2 feature (required by
+      # stellar-accounts =0.7.2, see adr/0004) only builds via the real
+      # `stellar contract build` command — it sets an env var plain `cargo
+      # build` does not. stellar-cli has no prebuilt-binary GitHub Action
+      # as of writing, so cache the cargo-installed binary keyed on version
+      # rather than recompiling it (~19min from scratch) on every run.
+      - name: cache stellar-cli
+        id: cache-stellar-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/stellar
+          key: stellar-cli-27.0.0-${{ runner.os }}
+      - name: install stellar-cli
+        if: steps.cache-stellar-cli.outputs.cache-hit != 'true'
+        run: cargo install stellar-cli --version 27.0.0
       - name: build wasm
-        run: cargo build --release --target wasm32v1-none -p refluo-${{ matrix.contract }}
+        run: stellar contract build --package refluo-${{ matrix.contract }}
       - name: wasm size budget (alarm > 64KB)
         run: |
           set -euo pipefail

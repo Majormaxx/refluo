@@ -1,5 +1,5 @@
 [package]
-name = "refluo-policy-session"
+name = "refluo-vault"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ refluo-common = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-proptest = { workspace = true }
+ed25519-dalek = "=2.2.0"
 
 [features]
 testutils = ["soroban-sdk/testutils"]

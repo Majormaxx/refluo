@@ -21,21 +21,21 @@ recall on a measured SLA.
 
 ## Demo
 
-None yet. No agent has run against a deployed Refluo vault. Phase 0 is
-contract scaffolding only, nothing to point a demo at. First honest demo
-candidate is a testnet vault at the end of Phase 1 (an agent key paying
-via x402 within caps); this section gets a real link or recording then,
-not before.
+None yet. No agent has run against a deployed Refluo vault — nothing is
+live to point a demo at. First honest demo candidate is a testnet vault
+with an agent key paying via x402 within caps; this section gets a real
+link or recording once that exists, not before.
 
 ## Status & audit
 
-Pre-audit, pre-mainnet, Phase 0 (foundations). No live deployment. Contract
-crates in `contracts/` currently expose storage and config plumbing with
-unit tests. The enforcement logic (policy decoders, oracle read algorithm,
-pause/recovery state machine) is Phase 1-4 work, not implemented yet.
-Treat anything in this repo as scaffolding until that changes; this section
-will be updated honestly as phases land rather than describing capability
-that doesn't exist yet.
+Pre-audit, pre-mainnet, no live deployment. `vault`, `policy-venue`,
+`policy-recall`, and `policy-session` have real enforcement logic, tested
+individually and cross-contract (deploying a vault, wiring all three
+policies onto it, and confirming the admin-alone self-rescue path all pass
+in `contracts/integration-tests`). `oracle-router`, `health-monitor`,
+`timelock`, and `risk-engine` remain scaffolding only: storage and config
+plumbing, no enforcement logic yet. This section will keep tracking reality
+as the repo progresses, not describing capability that doesn't exist yet.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ Eight on-chain contracts plus one off-chain keeper:
 
 | Contract | Role |
 |---|---|
-| `vault` | Deployment recipe on OpenZeppelin `stellar-accounts`, not a contract Refluo owns |
+| `vault` | Thin wrapper on OpenZeppelin `stellar-accounts`: `SmartAccount` + `CustomAccountInterface`, no Refluo-specific auth logic |
 | `policy-venue` | YieldVenueAllowlist: decodes and caps venue deployment calls |
 | `policy-recall` | RecallExecutor: venue-to-vault-only fund recall, rate-limited |
 | `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
@@ -61,8 +61,8 @@ scheduling. This split keeps the audited on-chain surface small.
 ```
 refluo/
   contracts/
-    common/           shared types (SystemState, OracleStatus, PriceQuote, errors)
-    vault/             deployment recipe, not a WASM contract
+    common/           shared types (SystemState, OracleStatus, PriceQuote, BlendRequest, errors)
+    vault/             SmartAccount + CustomAccountInterface wrapper
     policy-venue/       YieldVenueAllowlist
     policy-recall/       RecallExecutor
     policy-session/       SessionScope
@@ -70,6 +70,7 @@ refluo/
     health-monitor/
     timelock/
     risk-engine/
+    integration-tests/ cross-contract tests (vault + policies wired together), dev-only
   keeper/             off-chain: forecaster / sentinel / reporter loops (not started)
   sdk/                TypeScript SDK for agent operators (not started)
   dashboard/          operator-facing web app (not started)
@@ -97,11 +98,20 @@ refluo/
   72h auto-expiry, narrow resume. Modeled on Lido's GateSeal, so a
   compromised guardian buys degraded yield for a bounded window, not a
   bricked treasury.
+- **Verify framework internals against source before writing logic against
+  them.** Building the vault and policy contracts against `stellar-accounts`'
+  real source (not docs or pseudocode) caught five wrong assumptions: wrong
+  `soroban-sdk` version, a nonexistent `can_enforce` trait method, a
+  nonexistent `Context` variant, an assumption that OZ ships a deployable
+  account contract, a nonexistent Blend `Claim` request type. See `adr/0004`.
 
 ## Quickstart
 
-Requires Rust with the `wasm32v1-none` target, and `stellar-cli` for
-deploys (not required for build/test).
+Requires Rust with the `wasm32v1-none` target, and `stellar-cli` (v27+) —
+required for build too, not just deploy: `stellar-accounts`' pinned
+`soroban-sdk` feature (`experimental_spec_shaking_v2`) only builds via
+`stellar contract build`, plain `cargo build --target wasm32v1-none` fails
+with a clear error naming the fix.
 
 ```
 git clone <this repo>
@@ -109,25 +119,34 @@ cd refluo
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo build --release --target wasm32v1-none -p refluo-risk-engine   # example; repeat per contract
+stellar contract build --package refluo-vault   # example; repeat per contract, or omit --package for all
 ```
 
 ## Testing
 
-Each contract crate has unit tests covering its current surface (config
-round-trips, storage defaults, the fee ceiling check). No property tests,
-fuzz targets, or integration tests against testnet Blend/Reflector exist
-yet. Those are Phase 1-5 deliverables per the test matrix, not implemented.
-Don't infer coverage from the presence of a `#[cfg(test)]` module; check
-what's actually asserted.
+`vault`, `policy-venue`, `policy-recall`, `policy-session` have real
+enforcement-logic test suites: unit tests per contract plus property tests
+(via `proptest`) for the invariants that matter most — epoch caps never
+exceeded across any interleaving, Blend's risk-increasing/administrative
+request types are unreachable under any input, recall destination always
+equals the vault, rate limits are monotone, session expiry has no off-by-one.
+`contracts/integration-tests` proves the composition unit tests can't: a
+deployed vault's own `add_context_rule` cross-calls into each policy's
+`install`, and an admin acting alone can strip every policy-bearing rule
+with zero keeper or dashboard involvement (the self-rescue guarantee,
+verified, not just asserted). `oracle-router`, `health-monitor`, `timelock`,
+`risk-engine` still only have config round-trip tests — no property tests,
+fuzz targets, or testnet integration tests against real Blend/Reflector
+exist yet anywhere in the repo. Don't infer coverage from the presence of a
+`#[cfg(test)]` module; check what's actually asserted.
 
 ## Monitoring
 
 None yet, correctly: there's no live system to monitor. This section stays
-empty until Phase 5, when the operator dashboard's SLA panel (Tier 0 hit
-rate, recall latency, pause count, forecaster error) goes live against real
-telemetry. Not the same gap as Demo: a dashboard spec exists internally,
-it just isn't built.
+empty until the operator dashboard's SLA panel (Tier 0 hit rate, recall
+latency, pause count, forecaster error) goes live against real telemetry.
+Not the same gap as Demo: a dashboard spec exists internally, it just
+isn't built.
 
 ## CI/CD
 
@@ -136,11 +155,12 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR:
 then a per-contract `wasm32v1-none` release build with a 64KB wasm size
 budget that fails the build if exceeded. All four must pass before merge.
 
-## Roadmap
+## What's left
 
-Phase 0 (this scaffold) → Phase 1 (AgentVault + policies) → Phase 2
-(OracleRouter, blocked on RedStone mainnet feed verification) → Phase 3
-(RiskEngine + tiering) → Phase 4 (HealthMonitor + Forecaster) → Phase 5
-(hardening: fuzz, external review, paid audit, mainnet canary) → Phase 6
-(post-audit differentiation). Detailed phase exit criteria are tracked
-locally, not in this repo.
+Enforcement logic for `oracle-router` (blocked on RedStone mainnet feed
+verification), `health-monitor`, `timelock`, and `risk-engine`. Then the
+off-chain keeper, the TypeScript SDK, and the operator dashboard, none of
+which exist yet. Then hardening: fuzz targets, external review, a paid
+audit, and a mainnet canary under a hardcoded TVL cap before any real
+customer funds. Detailed sequencing and exit criteria are tracked locally,
+not in this repo.

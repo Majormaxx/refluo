@@ -53,6 +53,31 @@ pub enum CommonError {
     BadState = 7,
 }
 
+/// Mirrors Blend V2's `Request` struct. NOT a dependency on Blend's crate
+/// (unpublished on crates.io) — Soroban contracttype XDR encoding is
+/// structural (field order, not Rust type identity), so a local mirror with
+/// matching layout decodes real Blend calldata correctly. Verified against
+/// blend-capital/blend-contracts-v2 tag v2.0.0, pool/src/pool/actions.rs:
+/// request_type values below are confirmed from that source, not guessed.
+/// Shared by policy-venue and policy-recall, which both decode Blend
+/// `submit()` calldata.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlendRequest {
+    pub request_type: u32,
+    pub address: Address,
+    pub amount: i128,
+}
+
+pub const BLEND_SUPPLY: u32 = 0;
+pub const BLEND_WITHDRAW: u32 = 1;
+pub const BLEND_SUPPLY_COLLATERAL: u32 = 2;
+pub const BLEND_WITHDRAW_COLLATERAL: u32 = 3;
+// 4 Borrow, 5 Repay, 6-9 auction/administrative request types: intentionally
+// have no named constants here. Every consumer matches only the four names
+// above and rejects everything else via a wildcard arm, so an unnamed type
+// can never accidentally fall through as allowed.
+
 #[cfg(test)]
 mod test {
     use super::*;

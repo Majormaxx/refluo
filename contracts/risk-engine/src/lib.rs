@@ -2,17 +2,17 @@
 
 //! RiskEngine — SystemState + tier bookkeeping. Bounds-checker only: the one
 //! guarantee that matters is provable on-chain — no deployment above NORMAL.
-//! Also owns the fee-recipient hook (refluo-prd-unified.md §12.1, local):
-//! fee_bps lives in storage behind set_fee_bps(), never a compiled constant,
-//! so it can move later without a contract migration. Ships at 0% here.
-//! Full spec: refluo-implementation-spec.md §8 (local, not in this repo).
+//! Also owns the fee-recipient hook (see adr/0002): fee_bps lives in
+//! storage behind set_fee_bps(), never a compiled constant, so it can move
+//! later without a contract migration. Ships at 0% here. Full spec tracked
+//! internally, not in this repo.
 
 use refluo_common::{CommonError, SystemState};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
-/// Hardcoded ceiling, unchangeable by any admin or timelock action —
-/// a number a customer can verify on-chain, not a promise. 20% matches
-/// Yearn's historical performance-fee ceiling (refluo-prd-unified.md §12.1).
+/// Hardcoded ceiling, unchangeable by any admin or timelock action — a
+/// number a customer can verify on-chain, not a promise. 20% matches
+/// Yearn's historical performance-fee ceiling (adr/0002).
 const MAX_FEE_BPS: u32 = 2000;
 
 #[contracttype]
@@ -59,8 +59,9 @@ impl RiskEngine {
             .ok_or(CommonError::NotInitialized)
     }
 
-    /// Ships initialized to 0. Timelock-gated wiring is Phase 4 — this
-    /// scaffold only enforces the hardcoded ceiling, per §12.1.
+    /// Ships initialized to 0. Timelock-gated wiring lands once the
+    /// timelock contract is integrated — this scaffold only enforces the
+    /// hardcoded ceiling, per §12.1.
     pub fn set_fee_bps(e: Env, admin: Address, new_fee_bps: u32) -> Result<(), CommonError> {
         admin.require_auth();
         if new_fee_bps > MAX_FEE_BPS {
@@ -74,9 +75,9 @@ impl RiskEngine {
         e.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
-    // set_tier0_target / advance_state: Phase 3. Transitions validated
-    // on-chain per refluo-implementation-spec.md §8 — no deployment above
-    // NORMAL is the invariant every other contract in the system depends on.
+    // set_tier0_target / advance_state: not yet implemented. Transitions
+    // validated on-chain: no deployment above NORMAL is the invariant
+    // every other contract in the system depends on.
 }
 
 #[cfg(test)]

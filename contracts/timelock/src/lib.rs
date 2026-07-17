@@ -4,7 +4,7 @@
 //! (direct admin, no delay): pause, resume, guardian removal, allowlist
 //! removal, risk-profile downgrade, RecallExecutor tightening — the rule
 //! is: risk-reducing actions are exempt, risk-increasing actions wait.
-//! Full spec: refluo-implementation-spec.md §7 (local, not in this repo).
+//! Full spec tracked internally, not in this repo.
 
 use refluo_common::CommonError;
 use soroban_sdk::{
@@ -73,9 +73,10 @@ impl Timelock {
             .ok_or(CommonError::NotInitialized)
     }
 
-    // execute / cancel: Phase 4. execute is permissionless-after-eta by
-    // design (anyone can trigger, per roadmap doctrine: bounded, revocable,
-    // observable); invokes target.fn_name(args) via cross-contract call.
+    // execute / cancel: not yet implemented. execute is
+    // permissionless-after-eta by design (anyone can trigger, per doctrine:
+    // bounded, revocable, observable); invokes target.fn_name(args) via
+    // cross-contract call.
 }
 
 #[cfg(test)]

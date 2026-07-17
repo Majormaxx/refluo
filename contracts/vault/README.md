@@ -1,21 +1,29 @@
 # vault
 
-Not a contract Refluo owns — a deployment recipe on top of OpenZeppelin's
-`stellar-accounts` (pinned `v0.7.2`). See `refluo-prd-unified.md` §2 (local,
-not in this repo) for why: hand-rolling `__check_auth` is how solo devs die,
-and the framework's context-rule/policy decomposition already gives Refluo
-exactly the shape it needs.
+Thin wrapper on OpenZeppelin's `stellar-accounts` (pinned `v0.7.2`):
+implements `SmartAccount` and `CustomAccountInterface` with no
+Refluo-specific auth logic — `__check_auth` delegates entirely to
+`do_check_auth`. Hand-rolling `__check_auth` is how solo devs die, and the
+framework's context-rule/policy decomposition already gives Refluo exactly
+the shape it needs. See `adr/0004` for corrections found by verifying the
+framework's real source before writing this contract.
 
-Deploy script responsibilities (Phase 1, not yet implemented):
+Every `SmartAccount` method is explicitly re-declared in `src/lib.rs`
+(not left to the trait's defaults) — `#[contractimpl]` only exports methods
+textually present in the impl block, confirmed by building with
+`stellar contract build` and inspecting the exported-function list.
 
-1. Deploy an OZ smart account with admin context rule
+Deploy script responsibilities, not yet implemented (this is orchestration,
+not contract code):
+
+1. Deploy the vault with an admin context rule
    `simple_threshold(2, [you, cofounder, backup])`.
 2. Install four context rules — `R_ADMIN`, `R_AGENT_PAY`, `R_YIELD`,
    `R_RECALL` — wired to the policy contracts in `../policy-venue`,
-   `../policy-recall`, `../policy-session`.
+   `../policy-recall`, `../policy-session`. The wiring mechanism itself
+   (`add_context_rule` cross-calling each policy's `install`) is verified
+   in `../integration-tests`.
 3. All auth entries signed with ADDRESS_V2 credentials. Never V1.
 
 Scripts land here as `deploy.sh` / `deploy.ts` using `stellar-cli` once
-Phase 1 starts. Exact OZ constructor/helper names must be re-verified
-against the pinned `stellar-accounts` version at that time — the framework's
-surface has moved between minor versions before.
+that work starts.

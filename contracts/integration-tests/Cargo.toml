@@ -1,0 +1,19 @@
+[package]
+name = "refluo-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+stellar-accounts = { workspace = true }
+refluo-common = { workspace = true }
+refluo-vault = { path = "../vault", features = ["testutils"] }
+refluo-policy-venue = { path = "../policy-venue", features = ["testutils"] }
+refluo-policy-recall = { path = "../policy-recall", features = ["testutils"] }
+refluo-policy-session = { path = "../policy-session", features = ["testutils"] }
+ed25519-dalek = "=2.2.0"

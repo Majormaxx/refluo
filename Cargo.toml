@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "contracts/common",
+    "contracts/vault",
     "contracts/policy-venue",
     "contracts/policy-recall",
     "contracts/policy-session",
@@ -9,6 +10,7 @@ members = [
     "contracts/health-monitor",
     "contracts/timelock",
     "contracts/risk-engine",
+    "contracts/integration-tests",
 ]
 
 [workspace.package]
@@ -18,8 +20,15 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-soroban-sdk = "27.0.0"
+# Pinned to 26.1.0, not the latest 27.x: stellar-accounts =0.7.2 (our vault
+# framework, see adr/0001) hard-requires soroban-sdk "26.1.0" with the
+# experimental_spec_shaking_v2 feature. OZ hasn't republished stellar-accounts
+# against soroban-sdk 27 yet. Re-check this pin whenever stellar-accounts
+# cuts a new release — see adr/0004.
+soroban-sdk = { version = "26.1.0", features = ["experimental_spec_shaking_v2"] }
+stellar-accounts = "=0.7.2"
 refluo-common = { path = "contracts/common" }
+proptest = "1"
 
 [profile.release]
 opt-level = "z"

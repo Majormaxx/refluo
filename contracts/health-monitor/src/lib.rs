@@ -1,8 +1,8 @@
 #![no_std]
 
 //! HealthMonitor — gate-seal pause. Cheap/broad trigger, lazy auto-expiry,
-//! narrow resume, hysteresis-gated auto-recovery. Modeled on Lido's GateSeal.
-//! Full spec: refluo-implementation-spec.md §6 (local, not in this repo).
+//! narrow resume, hysteresis-gated auto-recovery. Modeled on Lido's
+//! GateSeal. Full spec tracked internally, not in this repo.
 
 use refluo_common::CommonError;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
@@ -54,7 +54,8 @@ impl HealthMonitor {
     }
 
     /// status() computes paused && now < pause_expiry lazily — no keeper
-    /// needed to un-pause, the ledger clock does it. Phase 4 full logic.
+    /// needed to un-pause, the ledger clock does it. Full trip/resume logic
+    /// not yet implemented.
     pub fn status(e: Env) -> bool {
         let state: Option<PauseState> = e.storage().instance().get(&DataKey::Pause);
         match state {
@@ -63,8 +64,9 @@ impl HealthMonitor {
         }
     }
 
-    // pause / resume_early / extend / check_and_trip / tick_recovery: Phase 4.
-    // Hysteresis constants (trip 5%, reset 1%) must never be made equal.
+    // pause / resume_early / extend / check_and_trip / tick_recovery: not
+    // yet implemented. Hysteresis constants (trip 5%, reset 1%) must never
+    // be made equal.
 }
 
 #[cfg(test)]

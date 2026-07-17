@@ -23,9 +23,9 @@ Status: accepted. Date: 2026-07.
 
 ## Why
 
-Full rationale in `refluo-prd-unified.md` §0 and §5 (local, not committed —
-see the repo's `.gitignore`). This ADR exists so the doctrine survives even
-if that document is ever lost, without reproducing its business content.
+Full rationale is tracked in an internal design document, not committed to
+this repo. This ADR exists so the doctrine survives independently of that
+document, without reproducing its business content.
 
 ## Consequences
 
