@@ -21,14 +21,9 @@ vault yet, so a full end-to-end demo doesn't exist.
 ## Status
 
 Pre-audit, pre-mainnet. Every on-chain contract has real enforcement
-logic, tested and verified live on Stellar testnet against real deployed
-infrastructure: real Reflector/RedStone feeds (`oracle-router`), a real
-cross-contract pause (`health-monitor`), a real on-chain USDC balance
-check (`risk-engine`), and a real governance handoff to a deployed
-contract (`timelock`). Each contract's
-`scripts/testnet_smoke_test.sh` reproduces its own verification from a
-fresh deployment. No audit yet; reports will be linked here once one
-happens.
+logic, verified live on testnet against real deployed infrastructure
+(see Architecture for what each contract does, Testing for how that's
+verified). No audit yet; reports will be linked here once one happens.
 
 ## Deployed contracts (Stellar testnet)
 
