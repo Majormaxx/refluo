@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Live end-to-end verification against real testnet oracle infrastructure —
 # not mocks. Deploys OracleRouter to Stellar testnet, configures it against
-# Reflector Pulse and RedStone's real testnet feeds (addresses verified from
-# each provider's own source, see refluo-prd-unified.md §13, local), and
+# Reflector Pulse and RedStone's real testnet feeds (addresses verified
+# directly from each provider's own source, not a secondary listing), and
 # confirms get_price() returns a Healthy quote both feeds agree on.
 #
 # Requires: stellar-cli, a funded testnet identity. Create one with:

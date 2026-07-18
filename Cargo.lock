@@ -1495,8 +1495,9 @@ dependencies = [
 name = "refluo-risk-engine"
 version = "0.1.0"
 dependencies = [
- "refluo-common",
- "soroban-sdk 26.1.0",
+ "proptest",
+ "sep-40-oracle",
+ "soroban-sdk 25.3.1",
 ]
 
 [[package]]

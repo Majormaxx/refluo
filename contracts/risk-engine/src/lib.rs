@@ -1,71 +1,360 @@
 #![no_std]
 
-//! RiskEngine — SystemState + tier bookkeeping. Bounds-checker only: the one
-//! guarantee that matters is provable on-chain — no deployment above NORMAL.
-//! Also owns the fee-recipient hook (see adr/0002): fee_bps lives in
-//! storage behind set_fee_bps(), never a compiled constant, so it can move
-//! later without a contract migration. Ships at 0% here. Full spec tracked
-//! internally, not in this repo.
+//! RiskEngine — SystemState + tier bookkeeping. Bounds-checker only: the
+//! one guarantee that matters is provable on-chain, no deployment above
+//! NORMAL. Also owns the fee-recipient hook (see adr/0002).
+//!
+//! Every upward (more conservative) transition is read from a real
+//! contract, never trusted from a caller: oracle status via a real
+//! cross-contract call to OracleRouter, pause status via a real
+//! cross-contract call to HealthMonitor, the critical-floor check via a
+//! real on-chain USDC balance read. Venue utilization is the one
+//! deliberately keeper-attested input (see adr/0006) — that's genuinely
+//! off-chain data (Blend reserve state via RPC), not a shortcut.
+//!
+//! Isolated on its own soroban-sdk version to share sep-40-oracle's Asset
+//! type directly with OracleRouter — see adr/0006 (mirrors adr/0005).
 
-use refluo_common::{CommonError, SystemState};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use sep_40_oracle::Asset;
+use soroban_sdk::{
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, token::TokenClient, Address, Env, Map,
+};
 
-/// Hardcoded ceiling, unchangeable by any admin or timelock action — a
-/// number a customer can verify on-chain, not a promise. 20% matches
-/// Yearn's historical performance-fee ceiling (adr/0002).
-const MAX_FEE_BPS: u32 = 2000;
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum SystemState {
+    Normal = 0,
+    PreemptiveDrain = 1,
+    Emergency = 2,
+    Paused = 3,
+}
+
+/// Mirrors oracle-router's OracleStatus. Cross-contract calls are
+/// structural (XDR-level), so this local mirror is correct as long as the
+/// field layout matches — the same principle as BlendRequest and the
+/// per-feed Asset handling in oracle-router itself.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MirroredOracleStatus {
+    Healthy = 0,
+    OneFeed = 1,
+    Degraded = 2,
+    HardStop = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MirroredPriceQuote {
+    pub price: i128,
+    pub timestamp: u64,
+    pub status: MirroredOracleStatus,
+    pub conservative_low: i128,
+    pub conservative_high: i128,
+}
+
+// The trait itself is never called directly, only its generated Client —
+// same pattern stellar-accounts uses for PolicyClientInterface.
+#[allow(dead_code)]
+#[contractclient(name = "OracleRouterClient")]
+trait OracleRouterInterface {
+    fn get_price(e: Env, asset: Asset) -> MirroredPriceQuote;
+}
+
+#[allow(dead_code)]
+#[contractclient(name = "HealthMonitorClient")]
+trait HealthMonitorInterface {
+    fn status(e: Env) -> bool;
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct TierConfig {
+    pub oracle_router: Address,
+    /// Which asset's price status gates transitions — the vault's Tier 0
+    /// reserve asset (USDC).
+    pub oracle_asset: Asset,
+    pub health_monitor: Address,
+    pub usdc_token: Address,
+    pub keeper: Address,
+    pub tier0_bounds_min: i128,
+    pub tier0_bounds_max: i128,
+    /// Emergency trigger: real on-chain Tier 0 balance below this.
+    pub critical_floor: i128,
+    /// Total Tier 1 capital cap across all venues.
+    pub tvl_cap: i128,
+    /// Keeper-attested utilization (bps) at or above this triggers
+    /// PreemptiveDrain via the utilization path.
+    pub preemptive_util_bps: u32,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TierState {
     pub tier0_target: i128,
-    pub tier0_bounds_min: i128,
-    pub tier0_bounds_max: i128,
-    pub tvl_cap: i128,
+    pub tier1_positions: Map<Address, i128>,
 }
 
 #[contracttype]
 pub enum DataKey {
+    Config(Address),
     State(Address),
     Tier(Address),
     FeeBps,
-    FeeRecipient,
 }
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(u32)]
+pub enum RiskError {
+    NotInitialized = 1,
+    Unauthorized = 2,
+    CapExceeded = 3,
+    InvalidTransition = 4,
+    InvalidConfig = 5,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct StateChanged {
+    #[topic]
+    pub account: Address,
+    pub from: SystemState,
+    pub to: SystemState,
+}
+
+/// Hardcoded ceiling, unchangeable by any admin or timelock action, a
+/// number a customer can verify on-chain, not a promise. 20% matches
+/// Yearn's historical performance-fee ceiling (adr/0002).
+const MAX_FEE_BPS: u32 = 2000;
 
 #[contract]
 pub struct RiskEngine;
 
 #[contractimpl]
 impl RiskEngine {
-    pub fn init(e: Env, account: Address, tier: TierState) {
+    pub fn init(e: Env, account: Address, cfg: TierConfig, tier0_target: i128) {
         account.require_auth();
+        if cfg.tier0_bounds_min > cfg.tier0_bounds_max
+            || tier0_target < cfg.tier0_bounds_min
+            || tier0_target > cfg.tier0_bounds_max
+            || cfg.tvl_cap <= 0
+            || cfg.critical_floor < 0
+        {
+            panic_with_error!(e, RiskError::InvalidConfig);
+        }
+        e.storage()
+            .persistent()
+            .set(&DataKey::Config(account.clone()), &cfg);
         e.storage()
             .persistent()
             .set(&DataKey::State(account.clone()), &SystemState::Normal);
+        let tier = TierState {
+            tier0_target,
+            tier1_positions: Map::new(&e),
+        };
         e.storage().persistent().set(&DataKey::Tier(account), &tier);
     }
 
-    pub fn state(e: Env, account: Address) -> Result<SystemState, CommonError> {
+    pub fn config(e: Env, account: Address) -> TierConfig {
+        e.storage()
+            .persistent()
+            .get(&DataKey::Config(account))
+            .unwrap_or_else(|| panic_with_error!(e, RiskError::NotInitialized))
+    }
+
+    pub fn state(e: Env, account: Address) -> SystemState {
         e.storage()
             .persistent()
             .get(&DataKey::State(account))
-            .ok_or(CommonError::NotInitialized)
+            .unwrap_or_else(|| panic_with_error!(e, RiskError::NotInitialized))
     }
 
-    pub fn tier_state(e: Env, account: Address) -> Result<TierState, CommonError> {
+    pub fn tier_state(e: Env, account: Address) -> TierState {
         e.storage()
             .persistent()
             .get(&DataKey::Tier(account))
-            .ok_or(CommonError::NotInitialized)
+            .unwrap_or_else(|| panic_with_error!(e, RiskError::NotInitialized))
+    }
+
+    /// The on-chain guarantee every policy depends on: never allow a
+    /// deployment that would push total Tier 1 capital above tvl_cap, and
+    /// never allow one at all above NORMAL.
+    pub fn deploy_allowed(e: Env, account: Address, amount: i128) -> bool {
+        let state: SystemState = Self::state(e.clone(), account.clone());
+        if state != SystemState::Normal {
+            return false;
+        }
+        let tier = Self::tier_state(e.clone(), account.clone());
+        let cfg = Self::config(e, account);
+        let total: i128 = tier.tier1_positions.values().iter().sum();
+        total.saturating_add(amount) <= cfg.tvl_cap
+    }
+
+    pub fn set_tier0_target(e: Env, account: Address, keeper: Address, new_target: i128) {
+        keeper.require_auth();
+        let cfg = Self::config(e.clone(), account.clone());
+        if keeper != cfg.keeper {
+            panic_with_error!(e, RiskError::Unauthorized);
+        }
+        let clamped = new_target.clamp(cfg.tier0_bounds_min, cfg.tier0_bounds_max);
+        let mut tier = Self::tier_state(e.clone(), account.clone());
+        tier.tier0_target = clamped;
+        e.storage().persistent().set(&DataKey::Tier(account), &tier);
+    }
+
+    pub fn record_tier1_position(
+        e: Env,
+        account: Address,
+        keeper: Address,
+        venue: Address,
+        amount: i128,
+    ) {
+        keeper.require_auth();
+        let cfg = Self::config(e.clone(), account.clone());
+        if keeper != cfg.keeper {
+            panic_with_error!(e, RiskError::Unauthorized);
+        }
+        let mut tier = Self::tier_state(e.clone(), account.clone());
+        tier.tier1_positions.set(venue, amount);
+        e.storage().persistent().set(&DataKey::Tier(account), &tier);
+    }
+
+    /// Permissionless crank: anyone can call this to move state to a more
+    /// conservative level when real, objectively-checkable conditions
+    /// warrant it. Never moves state to a less conservative level — that's
+    /// keeper_advance_state's job, deliberately gated tighter.
+    pub fn check_and_trip(e: Env, account: Address) -> SystemState {
+        let current = Self::state(e.clone(), account.clone());
+        let cfg = Self::config(e.clone(), account.clone());
+
+        let paused = HealthMonitorClient::new(&e, &cfg.health_monitor).status();
+        let oracle = OracleRouterClient::new(&e, &cfg.oracle_router).get_price(&cfg.oracle_asset);
+        let tier0_balance = TokenClient::new(&e, &cfg.usdc_token).balance(&account);
+
+        let target = if paused {
+            SystemState::Paused
+        } else if matches!(
+            oracle.status,
+            MirroredOracleStatus::Degraded | MirroredOracleStatus::HardStop
+        ) || tier0_balance < cfg.critical_floor
+        {
+            SystemState::Emergency
+        } else if matches!(oracle.status, MirroredOracleStatus::OneFeed) {
+            SystemState::PreemptiveDrain
+        } else {
+            current
+        };
+
+        if target > current {
+            e.storage()
+                .persistent()
+                .set(&DataKey::State(account.clone()), &target);
+            StateChanged {
+                account,
+                from: current,
+                to: target,
+            }
+            .publish(&e);
+            target
+        } else {
+            current
+        }
+    }
+
+    /// The only path that moves state to a less conservative level, or
+    /// triggers PreemptiveDrain via keeper-attested utilization rather
+    /// than oracle status. Every downward move requires the oracle to be
+    /// genuinely Healthy right now, verified live, not asserted.
+    pub fn keeper_advance_state(
+        e: Env,
+        account: Address,
+        keeper: Address,
+        to: SystemState,
+        utilization_bps: Option<u32>,
+    ) {
+        keeper.require_auth();
+        let cfg = Self::config(e.clone(), account.clone());
+        if keeper != cfg.keeper {
+            panic_with_error!(e, RiskError::Unauthorized);
+        }
+        let current = Self::state(e.clone(), account.clone());
+
+        if to < current {
+            // Recovery must clear every real condition that could
+            // independently justify the more-severe state being left, not
+            // just the one the caller happens to mention. Emergency has
+            // two independent triggers (oracle degraded, balance below
+            // critical_floor) — recovering past it requires both cleared,
+            // verified live, not asserted by the keeper.
+            let oracle =
+                OracleRouterClient::new(&e, &cfg.oracle_router).get_price(&cfg.oracle_asset);
+            let paused = HealthMonitorClient::new(&e, &cfg.health_monitor).status();
+            let tier0_balance = TokenClient::new(&e, &cfg.usdc_token).balance(&account);
+
+            if paused {
+                panic_with_error!(e, RiskError::InvalidTransition);
+            }
+
+            let ok = match to {
+                SystemState::Normal => {
+                    matches!(oracle.status, MirroredOracleStatus::Healthy)
+                        && tier0_balance >= cfg.critical_floor
+                }
+                SystemState::PreemptiveDrain => {
+                    !matches!(
+                        oracle.status,
+                        MirroredOracleStatus::Degraded | MirroredOracleStatus::HardStop
+                    ) && tier0_balance >= cfg.critical_floor
+                }
+                _ => false,
+            };
+            if !ok {
+                panic_with_error!(e, RiskError::InvalidTransition);
+            }
+
+            e.storage()
+                .persistent()
+                .set(&DataKey::State(account.clone()), &to);
+            StateChanged {
+                account,
+                from: current,
+                to,
+            }
+            .publish(&e);
+            return;
+        }
+
+        if to == SystemState::PreemptiveDrain && to >= current {
+            let util = utilization_bps
+                .unwrap_or_else(|| panic_with_error!(e, RiskError::InvalidTransition));
+            if util < cfg.preemptive_util_bps {
+                panic_with_error!(e, RiskError::InvalidTransition);
+            }
+            e.storage().persistent().set(
+                &DataKey::State(account.clone()),
+                &SystemState::PreemptiveDrain,
+            );
+            StateChanged {
+                account,
+                from: current,
+                to: SystemState::PreemptiveDrain,
+            }
+            .publish(&e);
+            return;
+        }
+
+        panic_with_error!(e, RiskError::InvalidTransition);
     }
 
     /// Ships initialized to 0. Timelock-gated wiring lands once the
     /// timelock contract is integrated — this scaffold only enforces the
-    /// hardcoded ceiling, per §12.1.
-    pub fn set_fee_bps(e: Env, admin: Address, new_fee_bps: u32) -> Result<(), CommonError> {
+    /// hardcoded ceiling, per adr/0002.
+    pub fn set_fee_bps(e: Env, admin: Address, new_fee_bps: u32) -> Result<(), RiskError> {
         admin.require_auth();
         if new_fee_bps > MAX_FEE_BPS {
-            return Err(CommonError::CapExceeded);
+            return Err(RiskError::CapExceeded);
         }
         e.storage().instance().set(&DataKey::FeeBps, &new_fee_bps);
         Ok(())
@@ -74,74 +363,432 @@ impl RiskEngine {
     pub fn fee_bps(e: Env) -> u32 {
         e.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
-
-    // set_tier0_target / advance_state: not yet implemented. Transitions
-    // validated on-chain: no deployment above NORMAL is the invariant
-    // every other contract in the system depends on.
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use soroban_sdk::testutils::Address as _;
+    extern crate std;
 
-    fn sample_tier() -> TierState {
-        TierState {
-            tier0_target: 10_000_000_000,
-            tier0_bounds_min: 5_000_000_000,
-            tier0_bounds_max: 20_000_000_000,
-            tvl_cap: 100_000_000_000,
+    use super::*;
+    use soroban_sdk::{
+        contract, contractimpl,
+        testutils::{Address as _, Ledger},
+        token::StellarAssetClient,
+        Symbol,
+    };
+
+    // ################## MOCK ORACLE ROUTER ##################
+
+    #[contracttype]
+    enum MockOracleKey {
+        Status,
+    }
+
+    #[contract]
+    struct MockOracleRouter;
+
+    #[contractimpl]
+    impl MockOracleRouter {
+        pub fn set_status(e: Env, status: MirroredOracleStatus) {
+            e.storage().instance().set(&MockOracleKey::Status, &status);
         }
     }
+
+    #[contractimpl]
+    impl OracleRouterInterface for MockOracleRouter {
+        fn get_price(e: Env, _asset: Asset) -> MirroredPriceQuote {
+            let status = e
+                .storage()
+                .instance()
+                .get(&MockOracleKey::Status)
+                .unwrap_or(MirroredOracleStatus::Healthy);
+            MirroredPriceQuote {
+                price: 1_00000000,
+                timestamp: e.ledger().timestamp(),
+                status,
+                conservative_low: 1_00000000,
+                conservative_high: 1_00000000,
+            }
+        }
+    }
+
+    // ################## MOCK HEALTH MONITOR ##################
+
+    #[contracttype]
+    enum MockHealthKey {
+        Paused,
+    }
+
+    #[contract]
+    struct MockHealthMonitor;
+
+    #[contractimpl]
+    impl MockHealthMonitor {
+        pub fn set_paused(e: Env, paused: bool) {
+            e.storage().instance().set(&MockHealthKey::Paused, &paused);
+        }
+    }
+
+    #[contractimpl]
+    impl HealthMonitorInterface for MockHealthMonitor {
+        fn status(e: Env) -> bool {
+            e.storage()
+                .instance()
+                .get(&MockHealthKey::Paused)
+                .unwrap_or(false)
+        }
+    }
+
+    // ################## SETUP ##################
+
+    struct Fixture<'a> {
+        risk: RiskEngineClient<'a>,
+        oracle: MockOracleRouterClient<'a>,
+        health: MockHealthMonitorClient<'a>,
+        usdc: Address,
+        usdc_admin: StellarAssetClient<'a>,
+        account: Address,
+        keeper: Address,
+    }
+
+    fn advance_to_realistic_ledger(e: &Env) {
+        e.ledger().with_mut(|l| {
+            l.timestamp = 2_000_000_000;
+            l.sequence_number = 2_000_000;
+        });
+    }
+
+    fn setup(e: &Env) -> Fixture<'_> {
+        advance_to_realistic_ledger(e);
+        e.mock_all_auths();
+
+        let risk_id = e.register(RiskEngine, ());
+        let risk = RiskEngineClient::new(e, &risk_id);
+
+        let oracle_id = e.register(MockOracleRouter, ());
+        let oracle = MockOracleRouterClient::new(e, &oracle_id);
+
+        let health_id = e.register(MockHealthMonitor, ());
+        let health = MockHealthMonitorClient::new(e, &health_id);
+
+        let usdc_issuer = Address::generate(e);
+        let sac = e.register_stellar_asset_contract_v2(usdc_issuer);
+        let usdc = sac.address();
+        let usdc_admin = StellarAssetClient::new(e, &usdc);
+
+        let account = Address::generate(e);
+        let keeper = Address::generate(e);
+
+        let cfg = TierConfig {
+            oracle_router: oracle_id,
+            oracle_asset: Asset::Other(Symbol::new(e, "USDC")),
+            health_monitor: health_id,
+            usdc_token: usdc.clone(),
+            keeper: keeper.clone(),
+            tier0_bounds_min: 50_000_000_000,
+            tier0_bounds_max: 200_000_000_000,
+            critical_floor: 10_000_000_000,
+            tvl_cap: 1_000_000_000_000,
+            preemptive_util_bps: 8500,
+        };
+        risk.init(&account, &cfg, &100_000_000_000);
+
+        Fixture {
+            risk,
+            oracle,
+            health,
+            usdc,
+            usdc_admin,
+            account,
+            keeper,
+        }
+    }
+
+    // ################## INIT / CONFIG ##################
 
     #[test]
     fn init_defaults_to_normal_state() {
         let e = Env::default();
-        let contract_id = e.register(RiskEngine, ());
-        let client = RiskEngineClient::new(&e, &contract_id);
-
-        let account = Address::generate(&e);
-        let tier = sample_tier();
-
-        e.mock_all_auths();
-        client.init(&account, &tier);
-
-        assert_eq!(client.state(&account), SystemState::Normal);
-        assert_eq!(client.tier_state(&account), tier);
+        let f = setup(&e);
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+        assert_eq!(f.risk.tier_state(&f.account).tier0_target, 100_000_000_000);
     }
+
+    #[test]
+    fn init_rejects_target_outside_bounds() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        e.mock_all_auths();
+        let risk_id = e.register(RiskEngine, ());
+        let risk = RiskEngineClient::new(&e, &risk_id);
+        let account = Address::generate(&e);
+        let cfg = TierConfig {
+            oracle_router: Address::generate(&e),
+            oracle_asset: Asset::Other(Symbol::new(&e, "USDC")),
+            health_monitor: Address::generate(&e),
+            usdc_token: Address::generate(&e),
+            keeper: Address::generate(&e),
+            tier0_bounds_min: 50_000_000_000,
+            tier0_bounds_max: 200_000_000_000,
+            critical_floor: 10_000_000_000,
+            tvl_cap: 1_000_000_000_000,
+            preemptive_util_bps: 8500,
+        };
+        let result = risk.try_init(&account, &cfg, &10_000_000_000);
+        assert!(result.is_err());
+    }
+
+    // ################## FEE HOOK (preserved from adr/0002) ##################
 
     #[test]
     fn fee_bps_defaults_to_zero() {
         let e = Env::default();
-        let contract_id = e.register(RiskEngine, ());
-        let client = RiskEngineClient::new(&e, &contract_id);
-        assert_eq!(client.fee_bps(), 0);
+        let f = setup(&e);
+        assert_eq!(f.risk.fee_bps(), 0);
     }
 
     #[test]
     fn set_fee_bps_within_ceiling_succeeds() {
         let e = Env::default();
-        let contract_id = e.register(RiskEngine, ());
-        let client = RiskEngineClient::new(&e, &contract_id);
-
+        let f = setup(&e);
         let admin = Address::generate(&e);
-        e.mock_all_auths();
-        client.set_fee_bps(&admin, &1500);
-
-        assert_eq!(client.fee_bps(), 1500);
+        f.risk.set_fee_bps(&admin, &1500);
+        assert_eq!(f.risk.fee_bps(), 1500);
     }
 
     #[test]
     fn set_fee_bps_above_ceiling_fails() {
         let e = Env::default();
-        let contract_id = e.register(RiskEngine, ());
-        let client = RiskEngineClient::new(&e, &contract_id);
-
+        let f = setup(&e);
         let admin = Address::generate(&e);
-        e.mock_all_auths();
-        let result = client.try_set_fee_bps(&admin, &(MAX_FEE_BPS + 1));
-
+        let result = f.risk.try_set_fee_bps(&admin, &(MAX_FEE_BPS + 1));
         assert!(result.is_err());
-        assert_eq!(client.fee_bps(), 0);
+        assert_eq!(f.risk.fee_bps(), 0);
+    }
+
+    // ################## TIER BOOKKEEPING ##################
+
+    #[test]
+    fn set_tier0_target_clamps_to_bounds() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.risk
+            .set_tier0_target(&f.account, &f.keeper, &9_990_000_000_000);
+        assert_eq!(f.risk.tier_state(&f.account).tier0_target, 200_000_000_000);
+
+        f.risk.set_tier0_target(&f.account, &f.keeper, &1);
+        assert_eq!(f.risk.tier_state(&f.account).tier0_target, 50_000_000_000);
+    }
+
+    #[test]
+    fn non_keeper_cannot_set_tier0_target() {
+        let e = Env::default();
+        let f = setup(&e);
+        let outsider = Address::generate(&e);
+        let result = f
+            .risk
+            .try_set_tier0_target(&f.account, &outsider, &100_000_000_000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_allowed_respects_tvl_cap() {
+        let e = Env::default();
+        let f = setup(&e);
+        let venue = Address::generate(&e);
+        f.risk
+            .record_tier1_position(&f.account, &f.keeper, &venue, &990_000_000_000);
+
+        assert!(f.risk.deploy_allowed(&f.account, &500_0000000));
+        assert!(!f.risk.deploy_allowed(&f.account, &20_000_000_000));
+    }
+
+    #[test]
+    fn deploy_allowed_false_when_not_normal() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+        assert!(!f.risk.deploy_allowed(&f.account, &1));
+    }
+
+    // ################## check_and_trip: REAL cross-contract checks ##################
+
+    #[test]
+    fn check_and_trip_stays_normal_when_everything_healthy() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.usdc_admin.mint(&f.account, &500_000_000_000);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Normal);
+    }
+
+    #[test]
+    fn check_and_trip_moves_to_preemptive_drain_on_one_feed() {
+        let e = Env::default();
+        let f = setup(&e);
+        // Fund above critical_floor so the real balance check doesn't
+        // independently trigger Emergency and mask what this test targets.
+        f.usdc_admin.mint(&f.account, &500_000_000_000);
+        f.oracle.set_status(&MirroredOracleStatus::OneFeed);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::PreemptiveDrain);
+    }
+
+    #[test]
+    fn check_and_trip_moves_to_emergency_on_degraded_oracle() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Emergency);
+    }
+
+    #[test]
+    fn check_and_trip_moves_to_emergency_on_real_low_balance() {
+        let e = Env::default();
+        let f = setup(&e);
+        // Real on-chain balance check: mint less than critical_floor
+        // (10_000_000_000) into the real SAC token, not a claimed number.
+        f.usdc_admin.mint(&f.account, &500_0000000);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Emergency);
+    }
+
+    #[test]
+    fn check_and_trip_moves_to_paused_when_health_monitor_paused() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.health.set_paused(&true);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Paused);
+    }
+
+    #[test]
+    fn check_and_trip_paused_takes_priority_over_oracle_degraded() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.health.set_paused(&true);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Paused);
+    }
+
+    #[test]
+    fn check_and_trip_never_moves_state_downward() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+
+        // Oracle recovers, but check_and_trip must never self-downgrade —
+        // only keeper_advance_state can move state to a less severe level.
+        f.oracle.set_status(&MirroredOracleStatus::Healthy);
+        let result = f.risk.check_and_trip(&f.account);
+        assert_eq!(result, SystemState::Emergency);
+    }
+
+    // ################## keeper_advance_state: real recovery gating ##################
+
+    #[test]
+    fn keeper_can_recover_to_normal_when_oracle_genuinely_healthy() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+
+        // Recovery requires both Emergency triggers cleared, not just the
+        // one that originally tripped it — fund above critical_floor too.
+        f.usdc_admin.mint(&f.account, &500_000_000_000);
+        f.oracle.set_status(&MirroredOracleStatus::Healthy);
+        f.risk
+            .keeper_advance_state(&f.account, &f.keeper, &SystemState::Normal, &None);
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+    }
+
+    #[test]
+    fn keeper_recovery_rejected_when_oracle_still_unhealthy() {
+        let e = Env::default();
+        let f = setup(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+
+        // Oracle never recovered — a keeper claiming Normal must be
+        // rejected against the real, currently-Degraded oracle status.
+        let result =
+            f.risk
+                .try_keeper_advance_state(&f.account, &f.keeper, &SystemState::Normal, &None);
+        assert!(result.is_err());
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+    }
+
+    #[test]
+    fn keeper_recovery_rejected_when_balance_still_below_critical_floor() {
+        // The exact gap a first draft of this check missed: Emergency has
+        // two independent triggers (oracle degraded, balance too low).
+        // Clearing only the oracle side must not be enough to recover.
+        let e = Env::default();
+        let f = setup(&e);
+        assert_eq!(f.risk.config(&f.account).usdc_token, f.usdc);
+
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+
+        // Oracle recovers, but the vault is still under-funded (0 balance,
+        // never minted) — recovery must still be rejected.
+        f.oracle.set_status(&MirroredOracleStatus::Healthy);
+        let result =
+            f.risk
+                .try_keeper_advance_state(&f.account, &f.keeper, &SystemState::Normal, &None);
+        assert!(result.is_err());
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+    }
+
+    #[test]
+    fn non_keeper_cannot_advance_state() {
+        let e = Env::default();
+        let f = setup(&e);
+        let outsider = Address::generate(&e);
+        let result = f.risk.try_keeper_advance_state(
+            &f.account,
+            &outsider,
+            &SystemState::PreemptiveDrain,
+            &Some(9000),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn keeper_can_trigger_preemptive_drain_via_utilization_attestation() {
+        let e = Env::default();
+        let f = setup(&e);
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+
+        f.risk.keeper_advance_state(
+            &f.account,
+            &f.keeper,
+            &SystemState::PreemptiveDrain,
+            &Some(9000),
+        );
+        assert_eq!(f.risk.state(&f.account), SystemState::PreemptiveDrain);
+    }
+
+    #[test]
+    fn keeper_utilization_attestation_below_threshold_rejected() {
+        let e = Env::default();
+        let f = setup(&e);
+        let result = f.risk.try_keeper_advance_state(
+            &f.account,
+            &f.keeper,
+            &SystemState::PreemptiveDrain,
+            &Some(1000), // below preemptive_util_bps (8500)
+        );
+        assert!(result.is_err());
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
     }
 }

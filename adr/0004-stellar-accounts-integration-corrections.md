@@ -72,9 +72,9 @@ against tagged source, not documentation prose) is not.
 
 ## Consequences
 
-- `refluo-prd-unified.md` §13 (dependency risk register, local) is updated
-  to mark the `soroban-sdk` version and `Policy` trait shape as fully
-  verified rather than assumed.
+- The internal dependency risk register is updated to mark the
+  `soroban-sdk` version and `Policy` trait shape as fully verified rather
+  than assumed.
 - Any future contract implementing an OZ trait must pull the real source
   first (`cargo info <crate>` then read `~/.cargo/registry/src/...`) before
   writing pseudocode-derived logic. This is now standing practice, not a

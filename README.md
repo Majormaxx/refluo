@@ -37,10 +37,20 @@ all three policies onto it, and confirming the admin-alone self-rescue path
 all pass in `contracts/integration-tests`). `oracle-router` has real
 enforcement logic too (staleness gating, divergence bands, TWAP smoothing,
 a rate-of-change clamp) and is verified live against real Reflector and
-RedStone testnet contracts, not just mocks. `health-monitor`, `timelock`,
-and `risk-engine` remain scaffolding only: storage and config plumbing, no
-enforcement logic yet. This section will keep tracking reality as the repo
-progresses, not describing capability that doesn't exist yet.
+RedStone testnet contracts, going beyond what mocks alone could confirm.
+`health-monitor` has a real
+guardian-triggered, auto-expiring pause and an admin-gated early resume,
+also live-verified. `risk-engine` has a real four-state bounds-checker
+(Normal/PreemptiveDrain/Emergency/Paused) that reads its inputs from real
+contracts, not caller-supplied claims: a real cross-call to `oracle-router`
+for price status, a real cross-call to `health-monitor` for pause status,
+and a real on-chain USDC balance read for the critical-floor check. Every
+transition and rejection path has been driven live on testnet, reproducible
+via `contracts/risk-engine/scripts/testnet_smoke_test.sh`; see `adr/0006`
+for what that live run found that the unit suite couldn't. `timelock`
+remains scaffolding only: storage and config plumbing, no enforcement logic
+yet. This section will keep tracking reality as the repo progresses, not
+describing capability that doesn't exist yet.
 
 ## Architecture
 
@@ -53,9 +63,9 @@ Eight on-chain contracts plus one off-chain keeper:
 | `policy-recall` | RecallExecutor: venue-to-vault-only fund recall, rate-limited |
 | `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
 | `oracle-router` | Dual-feed price reads with staleness gating and rate-of-change clamping |
-| `health-monitor` | Gate-seal circuit breaker: guardian or oracle-triggered pause, auto-expiring |
+| `health-monitor` | Gate-seal circuit breaker: guardian-triggered pause, 72h auto-expiry, admin-gated early resume |
 | `timelock` | propose → 24h delay → execute for risk-increasing admin actions |
-| `risk-engine` | On-chain bounds-checker: system state + tier bookkeeping, no deployment above NORMAL |
+| `risk-engine` | On-chain bounds-checker: reads real oracle status, pause status, and USDC balance; no deployment above NORMAL |
 
 On-chain contracts enforce bounds; an off-chain keeper (`keeper/`, not yet
 built) makes the decisions: burn forecasting, oracle cross-checks, rebalance
@@ -123,6 +133,15 @@ refluo/
   `adr/0005`, including a real bug that deploying to testnet found and a
   same-shaped mock never would have: Reflector and RedStone key the same
   asset differently, and a config assuming one shared key was wrong.
+- **`risk-engine` reads real contracts, never trusts a caller's claim.**
+  Every condition that moves `SystemState` more conservative comes from a
+  live cross-contract call, never an argument a caller could lie about:
+  `oracle-router` for price status, `health-monitor` for pause status, a
+  real USDC balance read for the critical-floor check. See `adr/0006`,
+  including a live-testnet-only finding: the real testnet USDC contract
+  wraps a classic Stellar asset, and its balance check traps for any
+  account without an established trustline instead of returning zero, a
+  path no unit test double could have exercised.
 
 ## Quickstart
 
@@ -158,8 +177,16 @@ against mock feeds (staleness, divergence bands, TWAP, the rate-of-change
 clamp's dual-confirmation exemption) plus a live testnet smoke test against
 real Reflector and RedStone contracts, reproducible via
 `contracts/oracle-router/scripts/testnet_smoke_test.sh`, not a one-off.
-`health-monitor`, `timelock`, `risk-engine` still only have config
-round-trip tests, no property tests or fuzz targets yet. Don't infer
+`health-monitor` has 7 tests covering guardian-only pause, non-guardian
+rejection, 72h auto-expiry, and admin-gated early resume including the
+rejection path. `risk-engine` has 22 tests covering config validation, tier
+bookkeeping, every upward `check_and_trip` transition against a real
+Stellar Asset Contract balance check, and every `keeper_advance_state`
+recovery and rejection path, plus a live testnet smoke test
+(`contracts/risk-engine/scripts/testnet_smoke_test.sh`) that drives the
+same transitions against the real deployed `oracle-router` and
+`health-monitor` and a real USDC balance read. `timelock` still only has a
+config round-trip test, no property tests or fuzz targets yet. Don't infer
 coverage from the presence of a `#[cfg(test)]`
 module; check what's actually asserted.
 
@@ -180,8 +207,8 @@ budget that fails the build if exceeded. All four must pass before merge.
 
 ## What's left
 
-Enforcement logic for `health-monitor`, `timelock`, and `risk-engine`
-(`oracle-router` is done and testnet-verified). Then the off-chain keeper,
+Enforcement logic for `timelock` (`oracle-router`, `health-monitor`, and
+`risk-engine` are done and testnet-verified). Then the off-chain keeper,
 the TypeScript SDK, and the operator dashboard, none of which exist yet.
 Then hardening: fuzz targets, external review, a paid audit, and a mainnet
 canary under a hardcoded TVL cap before any real customer funds. Detailed

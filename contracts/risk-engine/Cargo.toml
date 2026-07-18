@@ -8,12 +8,19 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# Intentionally NOT { workspace = true } — see adr/0006 (mirrors adr/0005).
+# risk-engine cross-calls oracle-router and needs to share sep-40-oracle's
+# Asset type with it directly; that crate requires soroban-sdk ~25.3,
+# incompatible with the 26.1.0 the rest of the workspace pins for
+# stellar-accounts. risk-engine never calls into stellar-accounts or the
+# policy contracts, so nothing forces these to share a version.
 [dependencies]
-soroban-sdk = { workspace = true }
-refluo-common = { workspace = true }
+soroban-sdk = "25.3"
+sep-40-oracle = "1.4.0"
 
 [dev-dependencies]
-soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-sdk = { version = "25.3", features = ["testutils"] }
+proptest = { workspace = true }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

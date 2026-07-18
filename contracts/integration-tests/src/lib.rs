@@ -150,11 +150,11 @@ fn add_context_rule_installs_all_three_refluo_policies_on_separate_rules() {
 
 #[test]
 fn refluo_disappears_admin_removes_all_policies_without_keeper_or_dashboard() {
-    // The self-rescue guarantee (refluo-prd-unified.md §11, local): an
-    // admin, acting alone through the vault's own management functions,
-    // can strip every policy-bearing rule with zero involvement from the
-    // keeper, the SDK, or the dashboard — nothing here calls anything but
-    // the vault's own SmartAccount client.
+    // The self-rescue guarantee: an admin, acting alone through the
+    // vault's own management functions, can strip every policy-bearing
+    // rule with zero involvement from the keeper, the SDK, or the
+    // dashboard — nothing here calls anything but the vault's own
+    // SmartAccount client.
     let e = Env::default();
     advance_to_realistic_ledger(&e);
     e.mock_all_auths();
