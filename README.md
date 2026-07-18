@@ -20,21 +20,27 @@ never notices the difference.
 
 ## Demo
 
-None yet. No agent has run against a deployed Refluo vault — nothing is
-live to point a demo at. First honest demo candidate is a testnet vault
-with an agent key paying via x402 within caps; this section gets a real
-link or recording once that exists, not before.
+No agent has run against a deployed Refluo vault yet, so that demo still
+needs a real link or recording. One piece of it is live today: OracleRouter
+is deployed on Stellar testnet, reading XLM's price from real Reflector
+Pulse and RedStone feeds simultaneously and cross-checking them.
+`contracts/oracle-router/scripts/testnet_smoke_test.sh` reproduces it: it
+deploys fresh, configures both feeds, and confirms a healthy quote both
+providers agree on to within ~0.1%.
 
 ## Status & audit
 
-Pre-audit, pre-mainnet, no live deployment. `vault`, `policy-venue`,
-`policy-recall`, and `policy-session` have real enforcement logic, tested
-individually and cross-contract (deploying a vault, wiring all three
-policies onto it, and confirming the admin-alone self-rescue path all pass
-in `contracts/integration-tests`). `oracle-router`, `health-monitor`,
-`timelock`, and `risk-engine` remain scaffolding only: storage and config
-plumbing, no enforcement logic yet. This section will keep tracking reality
-as the repo progresses, not describing capability that doesn't exist yet.
+Pre-audit, pre-mainnet, no full end-to-end deployment. `vault`,
+`policy-venue`, `policy-recall`, and `policy-session` have real enforcement
+logic, tested individually and cross-contract (deploying a vault, wiring
+all three policies onto it, and confirming the admin-alone self-rescue path
+all pass in `contracts/integration-tests`). `oracle-router` has real
+enforcement logic too (staleness gating, divergence bands, TWAP smoothing,
+a rate-of-change clamp) and is verified live against real Reflector and
+RedStone testnet contracts, not just mocks. `health-monitor`, `timelock`,
+and `risk-engine` remain scaffolding only: storage and config plumbing, no
+enforcement logic yet. This section will keep tracking reality as the repo
+progresses, not describing capability that doesn't exist yet.
 
 ## Architecture
 
@@ -87,7 +93,7 @@ refluo/
 - **Bounds on-chain, judgment off-chain.** Anything that requires weighing
   evidence (burn forecasting, cross-checking oracle feeds against each
   other) runs in the keeper. Contracts only ever check a number against a
-  limit — caps, allowlists, staleness windows — which is what keeps the
+  limit (caps, allowlists, staleness windows), which is what keeps the
   code worth auditing small.
 - **USDC and XLM only in v1.** No long-tail collateral until an off-chain
   liquidity-admission pipeline exists, so there's no asset in the system
@@ -107,10 +113,20 @@ refluo/
   `soroban-sdk` version, a nonexistent `can_enforce` trait method, a
   nonexistent `Context` variant, an assumption that OZ ships a deployable
   account contract, a nonexistent Blend `Claim` request type. See `adr/0004`.
+- **One oracle client for both feeds, isolated on its own `soroban-sdk`
+  version.** Reflector's and RedStone's price types are structurally
+  identical to the standard `sep-40-oracle` crate, confirmed from all three
+  sources, so `oracle-router` depends on that crate directly instead of
+  hand-rolling two integrations, at the cost of pinning a different
+  `soroban-sdk` than the rest of the workspace, since nothing requires
+  `oracle-router` and `stellar-accounts` to share a compilation unit. See
+  `adr/0005`, including a real bug that deploying to testnet found and a
+  same-shaped mock never would have: Reflector and RedStone key the same
+  asset differently, and a config assuming one shared key was wrong.
 
 ## Quickstart
 
-Requires Rust with the `wasm32v1-none` target, and `stellar-cli` (v27+) —
+Requires Rust with the `wasm32v1-none` target, and `stellar-cli` (v27+),
 required for build too, not just deploy: `stellar-accounts`' pinned
 `soroban-sdk` feature (`experimental_spec_shaking_v2`) only builds via
 `stellar contract build`, plain `cargo build --target wasm32v1-none` fails
@@ -129,7 +145,7 @@ stellar contract build --package refluo-vault   # example; repeat per contract, 
 
 `vault`, `policy-venue`, `policy-recall`, `policy-session` have real
 enforcement-logic test suites: unit tests per contract plus property tests
-(via `proptest`) for the invariants that matter most — epoch caps never
+(via `proptest`) for the invariants that matter most: epoch caps never
 exceeded across any interleaving, Blend's risk-increasing/administrative
 request types are unreachable under any input, recall destination always
 equals the vault, rate limits are monotone, session expiry has no off-by-one.
@@ -137,11 +153,15 @@ equals the vault, rate limits are monotone, session expiry has no off-by-one.
 deployed vault's own `add_context_rule` cross-calls into each policy's
 `install`, and an admin acting alone can strip every policy-bearing rule
 with zero keeper or dashboard involvement (the self-rescue guarantee,
-verified, not just asserted). `oracle-router`, `health-monitor`, `timelock`,
-`risk-engine` still only have config round-trip tests — no property tests,
-fuzz targets, or testnet integration tests against real Blend/Reflector
-exist yet anywhere in the repo. Don't infer coverage from the presence of a
-`#[cfg(test)]` module; check what's actually asserted.
+verified, not just asserted). `oracle-router` has 15 unit/property tests
+against mock feeds (staleness, divergence bands, TWAP, the rate-of-change
+clamp's dual-confirmation exemption) plus a live testnet smoke test against
+real Reflector and RedStone contracts, reproducible via
+`contracts/oracle-router/scripts/testnet_smoke_test.sh`, not a one-off.
+`health-monitor`, `timelock`, `risk-engine` still only have config
+round-trip tests, no property tests or fuzz targets yet. Don't infer
+coverage from the presence of a `#[cfg(test)]`
+module; check what's actually asserted.
 
 ## Monitoring
 
@@ -160,10 +180,9 @@ budget that fails the build if exceeded. All four must pass before merge.
 
 ## What's left
 
-Enforcement logic for `oracle-router` (blocked on RedStone mainnet feed
-verification), `health-monitor`, `timelock`, and `risk-engine`. Then the
-off-chain keeper, the TypeScript SDK, and the operator dashboard, none of
-which exist yet. Then hardening: fuzz targets, external review, a paid
-audit, and a mainnet canary under a hardcoded TVL cap before any real
-customer funds. Detailed sequencing and exit criteria are tracked locally,
-not in this repo.
+Enforcement logic for `health-monitor`, `timelock`, and `risk-engine`
+(`oracle-router` is done and testnet-verified). Then the off-chain keeper,
+the TypeScript SDK, and the operator dashboard, none of which exist yet.
+Then hardening: fuzz targets, external review, a paid audit, and a mainnet
+canary under a hardcoded TVL cap before any real customer funds. Detailed
+sequencing and exit criteria are tracked locally, not in this repo.
