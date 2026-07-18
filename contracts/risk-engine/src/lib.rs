@@ -102,6 +102,7 @@ pub enum DataKey {
     State(Address),
     Tier(Address),
     FeeBps,
+    Admin,
 }
 
 #[contracterror]
@@ -348,11 +349,62 @@ impl RiskEngine {
         panic_with_error!(e, RiskError::InvalidTransition);
     }
 
-    /// Ships initialized to 0. Timelock-gated wiring lands once the
-    /// timelock contract is integrated — this scaffold only enforces the
-    /// hardcoded ceiling, per adr/0002.
+    /// One-time bootstrap for the global fee admin. In production this is
+    /// the deployed `timelock` contract's own address: `timelock`'s
+    /// `execute()` self-authorizes by passing its own address as the
+    /// `admin` argument, so raising a fee genuinely requires a proposal
+    /// that survived the 24h delay, per adr/0002 and adr/0007. Callable
+    /// once; re-running it after an admin is already set is rejected so a
+    /// later caller can't silently take over the fee-setting role.
+    pub fn init_admin(e: Env, admin: Address) -> Result<(), RiskError> {
+        admin.require_auth();
+        if e.storage().instance().has(&DataKey::Admin) {
+            return Err(RiskError::InvalidConfig);
+        }
+        e.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Hands off fee governance to a new address, `timelock`'s own
+    /// contract address in production. Only the current admin signs;
+    /// `new_admin` does not, deliberately: a contract address can never
+    /// sign a transaction the way an account key can, `require_auth()` for
+    /// one only ever succeeds when that contract is the actual caller in
+    /// the frame, so requiring its consent here is impossible, not just
+    /// inconvenient. The current admin choosing the successor is the whole
+    /// trust boundary, matching the standard ownership-transfer pattern
+    /// used across the ecosystem.
+    pub fn transfer_admin(
+        e: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), RiskError> {
+        current_admin.require_auth();
+        let stored_admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RiskError::NotInitialized)?;
+        if current_admin != stored_admin {
+            return Err(RiskError::Unauthorized);
+        }
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    /// Ships initialized to 0. Gated behind the stored admin (see
+    /// `init_admin`), not just any address that signs for itself, per
+    /// adr/0002 and adr/0007.
     pub fn set_fee_bps(e: Env, admin: Address, new_fee_bps: u32) -> Result<(), RiskError> {
         admin.require_auth();
+        let stored_admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RiskError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(RiskError::Unauthorized);
+        }
         if new_fee_bps > MAX_FEE_BPS {
             return Err(RiskError::CapExceeded);
         }
@@ -548,10 +600,20 @@ mod test {
     }
 
     #[test]
-    fn set_fee_bps_within_ceiling_succeeds() {
+    fn set_fee_bps_before_admin_bootstrapped_fails() {
+        let e = Env::default();
+        let f = setup(&e);
+        let outsider = Address::generate(&e);
+        let result = f.risk.try_set_fee_bps(&outsider, &1500);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_admin_then_set_fee_bps_within_ceiling_succeeds() {
         let e = Env::default();
         let f = setup(&e);
         let admin = Address::generate(&e);
+        f.risk.init_admin(&admin);
         f.risk.set_fee_bps(&admin, &1500);
         assert_eq!(f.risk.fee_bps(), 1500);
     }
@@ -561,9 +623,78 @@ mod test {
         let e = Env::default();
         let f = setup(&e);
         let admin = Address::generate(&e);
+        f.risk.init_admin(&admin);
         let result = f.risk.try_set_fee_bps(&admin, &(MAX_FEE_BPS + 1));
         assert!(result.is_err());
         assert_eq!(f.risk.fee_bps(), 0);
+    }
+
+    #[test]
+    fn set_fee_bps_from_non_admin_address_fails() {
+        let e = Env::default();
+        let f = setup(&e);
+        let admin = Address::generate(&e);
+        let outsider = Address::generate(&e);
+        f.risk.init_admin(&admin);
+        let result = f.risk.try_set_fee_bps(&outsider, &1500);
+        assert!(result.is_err());
+        assert_eq!(f.risk.fee_bps(), 0);
+    }
+
+    #[test]
+    fn init_admin_cannot_be_called_twice() {
+        let e = Env::default();
+        let f = setup(&e);
+        let admin = Address::generate(&e);
+        let attacker = Address::generate(&e);
+        f.risk.init_admin(&admin);
+        let result = f.risk.try_init_admin(&attacker);
+        assert!(result.is_err());
+
+        // The original admin, not the attacker, still governs the fee.
+        f.risk.set_fee_bps(&admin, &500);
+        assert_eq!(f.risk.fee_bps(), 500);
+        let result = f.risk.try_set_fee_bps(&attacker, &500);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn transfer_admin_hands_off_fee_governance() {
+        let e = Env::default();
+        let f = setup(&e);
+        let admin = Address::generate(&e);
+        // Standing in for a real timelock contract's own address here:
+        // the point under test is that whoever holds the Admin key can
+        // set the fee, and the old admin no longer can, not how that
+        // address is used elsewhere.
+        let new_admin = Address::generate(&e);
+        f.risk.init_admin(&admin);
+
+        f.risk.transfer_admin(&admin, &new_admin);
+
+        let result = f.risk.try_set_fee_bps(&admin, &500);
+        assert!(
+            result.is_err(),
+            "the old admin must lose fee authority immediately"
+        );
+        f.risk.set_fee_bps(&new_admin, &500);
+        assert_eq!(f.risk.fee_bps(), 500);
+    }
+
+    #[test]
+    fn transfer_admin_from_non_admin_rejected() {
+        let e = Env::default();
+        let f = setup(&e);
+        let admin = Address::generate(&e);
+        let outsider = Address::generate(&e);
+        let new_admin = Address::generate(&e);
+        f.risk.init_admin(&admin);
+
+        let result = f.risk.try_transfer_admin(&outsider, &new_admin);
+        assert!(result.is_err());
+        // Governance must still belong to the original admin.
+        f.risk.set_fee_bps(&admin, &200);
+        assert_eq!(f.risk.fee_bps(), 200);
     }
 
     // ################## TIER BOOKKEEPING ##################

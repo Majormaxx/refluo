@@ -47,10 +47,13 @@ for price status, a real cross-call to `health-monitor` for pause status,
 and a real on-chain USDC balance read for the critical-floor check. Every
 transition and rejection path has been driven live on testnet, reproducible
 via `contracts/risk-engine/scripts/testnet_smoke_test.sh`; see `adr/0006`
-for what that live run found that the unit suite couldn't. `timelock`
-remains scaffolding only: storage and config plumbing, no enforcement logic
-yet. This section will keep tracking reality as the repo progresses, not
-describing capability that doesn't exist yet.
+for what that live run found that the unit suite couldn't. `timelock` has
+a real `propose -> 24h delay -> execute` flow plus admin-gated `cancel`,
+and `risk-engine`'s `set_fee_bps` is now gated behind a real stored admin
+instead of any address that signs for itself, closing the gap `adr/0002`
+flagged from day one. Every on-chain contract in this repo now has real
+enforcement logic. This section will keep tracking reality as the repo
+progresses, not describing capability that doesn't exist yet.
 
 ## Architecture
 
@@ -142,6 +145,15 @@ refluo/
   wraps a classic Stellar asset, and its balance check traps for any
   account without an established trustline instead of returning zero, a
   path no unit test double could have exercised.
+- **A contract can't sign for itself the way an account key does.**
+  Handing `risk-engine`'s fee governance to `timelock`'s own contract
+  address needed a dedicated `transfer_admin()`, gated only by the current
+  admin, because a contract address only self-authorizes when it is
+  itself the actual caller in that invocation frame; an outside
+  transaction can never supply that consent no matter whose address it
+  passes as an argument. This surfaced by trying the naive approach
+  against a live deployment and watching it fail, not from reading the
+  authorization model's docs first. See `adr/0007`.
 
 ## Quickstart
 
@@ -185,9 +197,15 @@ Stellar Asset Contract balance check, and every `keeper_advance_state`
 recovery and rejection path, plus a live testnet smoke test
 (`contracts/risk-engine/scripts/testnet_smoke_test.sh`) that drives the
 same transitions against the real deployed `oracle-router` and
-`health-monitor` and a real USDC balance read. `timelock` still only has a
-config round-trip test, no property tests or fuzz targets yet. Don't infer
-coverage from the presence of a `#[cfg(test)]`
+`health-monitor` and a real USDC balance read. `timelock` has 8 tests
+covering admin bootstrap, proposal id sequencing, execute rejecting before
+eta, execute genuinely invoking a real separately-compiled target contract
+after the delay elapses, replay protection, and both the cancel and
+cancel-rejection paths, plus a live testnet smoke test
+(`contracts/timelock/scripts/testnet_smoke_test.sh`) that hands
+`risk-engine`'s fee governance to a real deployed `timelock` and proves a
+direct call from the old admin is rejected. Don't infer coverage from the
+presence of a `#[cfg(test)]`
 module; check what's actually asserted.
 
 ## Monitoring
@@ -207,9 +225,9 @@ budget that fails the build if exceeded. All four must pass before merge.
 
 ## What's left
 
-Enforcement logic for `timelock` (`oracle-router`, `health-monitor`, and
-`risk-engine` are done and testnet-verified). Then the off-chain keeper,
-the TypeScript SDK, and the operator dashboard, none of which exist yet.
-Then hardening: fuzz targets, external review, a paid audit, and a mainnet
-canary under a hardcoded TVL cap before any real customer funds. Detailed
-sequencing and exit criteria are tracked locally, not in this repo.
+Every on-chain contract now has real, testnet-verified enforcement logic.
+Next is the off-chain keeper, the TypeScript SDK, and the operator
+dashboard, none of which exist yet. Then hardening: fuzz targets, external
+review, a paid audit, and a mainnet canary under a hardcoded TVL cap
+before any real customer funds. Detailed sequencing and exit criteria are
+tracked locally, not in this repo.
