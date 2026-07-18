@@ -33,20 +33,27 @@ run; nothing here depends on these specific addresses staying up.
 
 | Contract | Address |
 |---|---|
+| `vault` | `CCVJGN5RWTGJBNCTBC6LAO4MDOCN34LJSSP2JDU7IFY43A4HHI4ZUDVV` |
+| `policy-admin-threshold` | `CARR5GDAUMF4DTH4YL43AFXNONCPSTL6NIEBZGSVEA7JIJYYAKC6GMWS` |
 | `oracle-router` | `CBDVIRUWVWC7M2ZJH7XDJNYCURUPQMO4F3AIX24CMY43QRY5V3RCN2MX` |
 | `health-monitor` | `CDRDZHLE62WPYCGJ4NREXVJXW3PWFBZRNEDNV3P526PXELAV3ARSNIXX` |
 | `risk-engine` | `CDAQLFJU3W26D3CKKXSF4CXGM3HKOA6ANJPWZA6XVFDFCRSZXX73FORY` |
 | `timelock` | `CCQY2XVKY77VDFYKG6PCUGOFHYEDFYTOGVK4PBTHGHPP2YS446RFZTAV` |
 
+`vault` is deployed with a real 2-of-3 admin multisig (three distinct
+testnet keys, `policy-admin-threshold` enforcing the threshold), the
+first live deployment of `vault` or any of its policies.
+
 Not mainnet-deployed.
 
 ## Architecture
 
-Eight on-chain contracts plus one off-chain keeper:
+Nine on-chain contracts plus one off-chain keeper:
 
 | Contract | Role |
 |---|---|
 | `vault` | Thin wrapper on OpenZeppelin `stellar-accounts`: `SmartAccount` + `CustomAccountInterface` |
+| `policy-admin-threshold` | Real M-of-N multisig gate for `R_ADMIN`, 2-of-3 in production |
 | `policy-venue` | YieldVenueAllowlist: decodes and caps venue deployment calls |
 | `policy-recall` | RecallExecutor: venue-to-vault-only fund recall, rate-limited |
 | `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
@@ -64,13 +71,15 @@ on-chain surface small.
 
 ```
 refluo/
-  contracts/    the eight contracts above, plus common/ (shared types) and
-                integration-tests/ (cross-contract, dev-only)
+  contracts/    the nine contracts above, plus common/ (shared types),
+                mock-price-feed/ (real PriceFeedTrait impl, drill-only,
+                not part of the product), and integration-tests/
+                (cross-contract, dev-only)
   adr/          architecture decision records
   keeper/       off-chain forecaster/sentinel/reporter loops (not started)
   sdk/          TypeScript SDK for agent operators (not started)
   dashboard/    operator-facing web app (not started)
-  drills/       scripted adversarial scenarios (not started)
+  drills/       scripted adversarial scenarios, some live (see Testing)
 ```
 
 ## Quickstart
@@ -96,9 +105,22 @@ not mocks: `contracts/<name>/scripts/testnet_smoke_test.sh`.
 `contracts/integration-tests` proves the composition unit tests can't,
 including the self-rescue guarantee: an admin acting alone can strip
 every policy from a vault with zero keeper or dashboard involvement.
-`timelock` is the newest and thinnest on property-test coverage;
-everything else has fuzzed invariants. Don't infer coverage from a
-`#[cfg(test)]` module existing, check what's actually asserted.
+`vault` and `policy-admin-threshold` were deployed live for the first
+time, and the real 2-of-3 admin bootstrap was confirmed against that real
+deployment, going beyond what an in-process simulation alone could show.
+The multi-signer submission itself needs the SDK's signing module, plain
+`stellar-cli` can't construct the nested authorization entries a real
+multisig call needs, see `adr/0008`.
+`timelock` is the newest and thinnest on property-test coverage.
+`oracle-router` and `policy-venue` also have real cargo-fuzz targets
+(`contracts/oracle-router/fuzz`, `contracts/policy-venue/fuzz`), going
+beyond property tests to fuzz the pricing math and the Blend `submit()`
+decoder respectively against inputs no property test happened to pick.
+`drills/yieldblox_drill.sh` runs a real 100x price spike against a real
+deployed secondary feed live on testnet and confirms OracleRouter refuses
+it, RiskEngine blocks deployment, and the system recovers on its own once
+the feed does, see `adr/0009`. Don't infer coverage from a `#[cfg(test)]`
+module existing, check what's actually asserted.
 
 ## Decisions & trade-offs
 

@@ -1,0 +1,28 @@
+[package]
+name = "refluo-policy-venue-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+soroban-sdk = { version = "26.1.0", features = ["experimental_spec_shaking_v2", "testutils"] }
+stellar-accounts = "=0.7.2"
+refluo-common = { path = "../../common" }
+
+[dependencies.refluo-policy-venue]
+path = ".."
+features = ["testutils"]
+
+[[bin]]
+name = "blend_submit_decode"
+path = "fuzz_targets/blend_submit_decode.rs"
+test = false
+doc = false
+bench = false

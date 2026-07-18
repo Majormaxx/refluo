@@ -1,0 +1,23 @@
+[package]
+name = "refluo-mock-price-feed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Same isolation as oracle-router (adr/0005): sep-40-oracle needs
+# soroban-sdk ~25.3. This crate exists only to drive the live YieldBlox
+# drill (adr/0009) against a real, attacker-controlled feed; it has no
+# reason to share a compilation unit with anything on 26.1.0.
+[dependencies]
+soroban-sdk = "25.3"
+sep-40-oracle = "1.4.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

@@ -285,7 +285,7 @@ fn fetch_fresh(
     })
 }
 
-fn rescale(price: i128, from_decimals: u32, to_decimals: u32) -> i128 {
+pub fn rescale(price: i128, from_decimals: u32, to_decimals: u32) -> i128 {
     if from_decimals == to_decimals {
         return price;
     }
@@ -297,7 +297,7 @@ fn rescale(price: i128, from_decimals: u32, to_decimals: u32) -> i128 {
 }
 
 /// Divergence in bps: |p - s| / min(p, s) * 10000.
-fn divergence_bps(p: i128, s: i128) -> u32 {
+pub fn divergence_bps(p: i128, s: i128) -> u32 {
     if p <= 0 || s <= 0 {
         return u32::MAX;
     }
@@ -361,7 +361,7 @@ fn resolve_both_available(
         if cross_check > cfg.divergence_hard {
             return degraded_quote(e, asset, last_accepted, now);
         }
-        if !roc_ok(cfg, t, last_accepted) {
+        if !roc_ok(cfg.max_roc_per_update, t, last_accepted) {
             PxRocReject {
                 asset: asset.clone(),
                 old: last_accepted.map(|q| q.price).unwrap_or(0),
@@ -399,7 +399,11 @@ fn resolve_one_available(
 ) -> PriceQuote {
     // No second feed to corroborate: the ROC clamp is never exempted here.
     // A single-feed manipulated tick must always fail this check.
-    if !roc_ok(cfg, f.price_router_decimals, last_accepted) {
+    if !roc_ok(
+        cfg.max_roc_per_update,
+        f.price_router_decimals,
+        last_accepted,
+    ) {
         PxRocReject {
             asset: asset.clone(),
             old: last_accepted.map(|q| q.price).unwrap_or(0),
@@ -428,7 +432,15 @@ fn resolve_one_available(
     }
 }
 
-fn roc_ok(cfg: &AssetOracleConfig, candidate: i128, last_accepted: Option<&PriceQuote>) -> bool {
+/// Takes the bound directly instead of the whole `AssetOracleConfig`:
+/// this is the only field of it the check ever reads, and narrowing the
+/// signature makes the function callable (and fuzzable) without needing
+/// an `Env` to build a config just to reach one `u32`.
+pub fn roc_ok(
+    max_roc_per_update: u32,
+    candidate: i128,
+    last_accepted: Option<&PriceQuote>,
+) -> bool {
     let Some(last) = last_accepted else {
         // Nothing accepted yet: no baseline to clamp against, first write
         // through always passes.
@@ -438,7 +450,7 @@ fn roc_ok(cfg: &AssetOracleConfig, candidate: i128, last_accepted: Option<&Price
         return true;
     }
     let roc = divergence_bps(candidate, last.price);
-    roc <= cfg.max_roc_per_update
+    roc <= max_roc_per_update
 }
 
 fn degraded_quote(

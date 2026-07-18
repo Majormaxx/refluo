@@ -13,6 +13,7 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 stellar-accounts = { workspace = true }
 refluo-common = { workspace = true }
 refluo-vault = { path = "../vault", features = ["testutils"] }
+refluo-policy-admin-threshold = { path = "../policy-admin-threshold", features = ["testutils"] }
 refluo-policy-venue = { path = "../policy-venue", features = ["testutils"] }
 refluo-policy-recall = { path = "../policy-recall", features = ["testutils"] }
 refluo-policy-session = { path = "../policy-session", features = ["testutils"] }

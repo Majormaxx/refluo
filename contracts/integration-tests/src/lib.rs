@@ -1,9 +1,10 @@
 //! Cross-contract integration tests: vault + policies wired together.
-//! Not compiled to WASM, not a workspace dependency of any contract —
+//! Not compiled to WASM, not a workspace dependency of any contract,
 //! dev-only, proves the composition the individual unit test suites can't.
 
 #![cfg(test)]
 
+use refluo_policy_admin_threshold::{PolicyAdminThreshold, PolicyAdminThresholdClient};
 use refluo_policy_recall::{PolicyRecall, RecallConfig};
 use refluo_policy_session::{DestClass, PolicySession, SessionConfig};
 use refluo_policy_venue::{PolicyVenue, VenueConfig};
@@ -23,10 +24,64 @@ fn advance_to_realistic_ledger(e: &Env) {
     });
 }
 
-fn deploy_vault(e: &Env) -> (Address, SmartAccountClient<'_>) {
-    let vault_id = e.register(Vault, ());
+/// The real R_ADMIN topology every deployed vault uses: 3 named signers, a
+/// 2-of-3 `PolicyAdminThreshold` gate, bootstrapped at construction, the
+/// only point in the vault's life a context rule can be created without
+/// already having one to authorize against (see the vault's own
+/// `__constructor` doc comment, adr/0008).
+struct AdminTopology {
+    admin_a: Signer,
+    admin_b: Signer,
+    admin_c: Signer,
+    admin_policy_id: Address,
+}
+
+fn deploy_vault(e: &Env) -> (Address, SmartAccountClient<'_>, AdminTopology) {
+    let admin_policy_id = e.register(PolicyAdminThreshold, ());
+    let admin_a = Signer::Delegated(Address::generate(e));
+    let admin_b = Signer::Delegated(Address::generate(e));
+    let admin_c = Signer::Delegated(Address::generate(e));
+    let admin_signers = Vec::from_array(e, [admin_a.clone(), admin_b.clone(), admin_c.clone()]);
+
+    let vault_id = e.register(Vault, (admin_signers, 2u32, admin_policy_id.clone()));
     let client = SmartAccountClient::new(e, &vault_id);
-    (vault_id, client)
+    (
+        vault_id,
+        client,
+        AdminTopology {
+            admin_a,
+            admin_b,
+            admin_c,
+            admin_policy_id,
+        },
+    )
+}
+
+#[test]
+fn constructor_bootstraps_r_admin_with_real_two_of_three_threshold() {
+    // The bootstrap this whole self-rescue guarantee depends on: R_ADMIN
+    // has to exist with a real 2-of-3 gate before any other context rule
+    // can, since every other admin-management call resolves auth against
+    // an *existing* rule. Confirms the constructor created rule 0 with
+    // all three signers and that PolicyAdminThreshold, not just the
+    // vault's registry, actually stored threshold=2.
+    let e = Env::default();
+    advance_to_realistic_ledger(&e);
+    e.mock_all_auths();
+
+    let (vault_id, vault, admin) = deploy_vault(&e);
+
+    assert_eq!(vault.get_context_rules_count(), 1);
+    let r_admin = vault.get_context_rule(&0);
+    assert_eq!(r_admin.signers.len(), 3);
+    assert!(r_admin.signers.contains(&admin.admin_a));
+    assert!(r_admin.signers.contains(&admin.admin_b));
+    assert!(r_admin.signers.contains(&admin.admin_c));
+    assert_eq!(r_admin.policies.len(), 1);
+    assert_eq!(r_admin.policies.get_unchecked(0), admin.admin_policy_id);
+
+    let policy_client = PolicyAdminThresholdClient::new(&e, &admin.admin_policy_id);
+    assert_eq!(policy_client.get_threshold(&0, &vault_id), 2);
 }
 
 #[test]
@@ -39,7 +94,7 @@ fn add_context_rule_installs_venue_policy_cross_contract() {
     advance_to_realistic_ledger(&e);
     e.mock_all_auths();
 
-    let (vault_id, vault) = deploy_vault(&e);
+    let (vault_id, vault, _admin) = deploy_vault(&e);
     let policy_venue_id = e.register(PolicyVenue, ());
 
     let admin = Address::generate(&e);
@@ -66,7 +121,7 @@ fn add_context_rule_installs_venue_policy_cross_contract() {
     assert_eq!(rule.policies.get_unchecked(0), policy_venue_id.clone());
 
     // The install actually landed in PolicyVenue's own storage, not just
-    // the smart account's registry — query it back through its own client.
+    // the smart account's registry, query it back through its own client.
     let policy_client = refluo_policy_venue::PolicyVenueClient::new(&e, &policy_venue_id);
     let stored = policy_client.config(&vault_id, &rule.id);
     assert_eq!(stored.per_call_cap, 1_000_000);
@@ -78,7 +133,7 @@ fn add_context_rule_installs_all_three_refluo_policies_on_separate_rules() {
     advance_to_realistic_ledger(&e);
     e.mock_all_auths();
 
-    let (_vault_id, vault) = deploy_vault(&e);
+    let (_vault_id, vault, _admin) = deploy_vault(&e);
     let policy_venue_id = e.register(PolicyVenue, ());
     let policy_recall_id = e.register(PolicyRecall, ());
     let policy_session_id = e.register(PolicySession, ());
@@ -142,7 +197,8 @@ fn add_context_rule_installs_all_three_refluo_policies_on_separate_rules() {
         &session_policies,
     );
 
-    assert_eq!(vault.get_context_rules_count(), 3);
+    // R_ADMIN (bootstrapped at construction) plus the three just added.
+    assert_eq!(vault.get_context_rules_count(), 4);
     assert_eq!(r_yield.policies.len(), 1);
     assert_eq!(r_recall.policies.len(), 1);
     assert_eq!(r_agent_pay.policies.len(), 1);
@@ -153,17 +209,17 @@ fn refluo_disappears_admin_removes_all_policies_without_keeper_or_dashboard() {
     // The self-rescue guarantee: an admin, acting alone through the
     // vault's own management functions, can strip every policy-bearing
     // rule with zero involvement from the keeper, the SDK, or the
-    // dashboard — nothing here calls anything but the vault's own
+    // dashboard. Nothing here calls anything but the vault's own
     // SmartAccount client.
     let e = Env::default();
     advance_to_realistic_ledger(&e);
     e.mock_all_auths();
 
-    let (vault_id, vault) = deploy_vault(&e);
+    let (vault_id, vault, admin_topology) = deploy_vault(&e);
     let policy_venue_id = e.register(PolicyVenue, ());
     let policy_recall_id = e.register(PolicyRecall, ());
 
-    let admin = Signer::Delegated(Address::generate(&e));
+    let admin = admin_topology.admin_a.clone();
     let keeper = Signer::Delegated(Address::generate(&e));
     let venue = Address::generate(&e);
 
@@ -199,12 +255,17 @@ fn refluo_disappears_admin_removes_all_policies_without_keeper_or_dashboard() {
         &recall_policies,
     );
 
-    assert_eq!(vault.get_context_rules_count(), 2);
+    // R_ADMIN (bootstrapped at construction) plus the two just added.
+    assert_eq!(vault.get_context_rules_count(), 3);
 
     // Self-rescue: admin removes both policy-bearing rules directly.
     // remove_context_rule cross-calls try_uninstall on every attached
     // policy in the same call (verified against stellar-accounts source,
-    // smart_account/storage.rs) — no off-chain actor participates.
+    // smart_account/storage.rs), no off-chain actor participates. This
+    // test still uses mock_all_auths for the removal itself (proving the
+    // uninstall wiring, not the 2-of-3 signature check); the real
+    // multisig gate is proven live on testnet instead, see adr/0008 for
+    // why MockAuth can't stand in for genuine multi-signer verification.
     vault.remove_context_rule(&r_yield.id);
     vault.remove_context_rule(&r_recall.id);
 

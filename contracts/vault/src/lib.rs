@@ -1,9 +1,9 @@
 #![no_std]
 
-//! AgentVault — thin wrapper around OZ `stellar-accounts` (pinned =0.7.2).
+//! AgentVault: thin wrapper around OZ `stellar-accounts` (pinned =0.7.2).
 //!
 //! Every method below is a verbatim copy of `SmartAccount`'s own trait
-//! default body (require_auth + delegate to `storage::*`) — not because the
+//! default body (require_auth + delegate to `storage::*`), not because the
 //! logic differs, but because `#[contractimpl]` only exports methods that
 //! are textually present in the impl block; a trait default that isn't
 //! re-declared here compiles fine at the Rust level but is never exposed as
@@ -17,21 +17,70 @@
 //! how solo devs die (adr/0001); this contract exists specifically to
 //! avoid writing one.
 //!
-//! `ExecutionEntryPoint` (the `execute` trait) is not implemented yet —
+//! `ExecutionEntryPoint` (the `execute` trait) is not implemented yet,
 //! deferred until a policy needs to call back into the vault, not needed
 //! for what's built so far.
 
 use soroban_sdk::{
-    auth::Context, auth::CustomAccountInterface, contract, contractimpl, crypto::Hash, Address,
-    Env, Map, String, Val, Vec,
+    auth::Context, auth::CustomAccountInterface, contract, contractimpl, crypto::Hash, map,
+    Address, Env, IntoVal, Map, String, Val, Vec,
 };
-use stellar_accounts::smart_account::{
-    self, do_check_auth, AuthPayload, ContextRule, ContextRuleType, Signer, SmartAccount,
-    SmartAccountError,
+use stellar_accounts::{
+    policies::simple_threshold::SimpleThresholdAccountParams,
+    smart_account::{
+        self, do_check_auth, AuthPayload, ContextRule, ContextRuleType, Signer, SmartAccount,
+        SmartAccountError,
+    },
 };
 
 #[contract]
 pub struct Vault;
+
+#[contractimpl]
+impl Vault {
+    /// Bootstraps `R_ADMIN` at deploy time. This is the only way a fresh
+    /// vault can ever get its first context rule: every other
+    /// admin-management method requires `e.current_contract_address().
+    /// require_auth()`, which resolves through this same vault's own
+    /// `__check_auth`, which in turn requires selecting an *existing*
+    /// context rule to validate against, per stellar-accounts' own
+    /// `get_validated_context_by_id` (panics on an unknown rule id).
+    /// A brand-new vault has none, so nothing else could ever create the
+    /// first one. Construction sidesteps this cleanly: it runs once, at
+    /// deploy time, authorized by the deploying transaction rather than by
+    /// the not-yet-existing account's own auth policy, the same pattern
+    /// every real Soroban smart-wallet factory uses. See adr/0008.
+    ///
+    /// `admin_policy` is the deployed `policy-admin-threshold` contract's
+    /// address; `admin_threshold` is how many of `admin_signers` must
+    /// co-sign (2-of-3 in production). No `require_auth()` here is
+    /// intentional, not an oversight: there is no existing rule to check
+    /// it against yet, and the deploy transaction itself is the trust
+    /// boundary for this one-time setup.
+    pub fn __constructor(
+        e: Env,
+        admin_signers: Vec<Signer>,
+        admin_threshold: u32,
+        admin_policy: Address,
+    ) {
+        let mut policies: Map<Address, Val> = map![&e];
+        policies.set(
+            admin_policy,
+            SimpleThresholdAccountParams {
+                threshold: admin_threshold,
+            }
+            .into_val(&e),
+        );
+        smart_account::add_context_rule(
+            &e,
+            &ContextRuleType::Default,
+            &String::from_str(&e, "R_ADMIN"),
+            None,
+            &admin_signers,
+            &policies,
+        );
+    }
+}
 
 #[contractimpl]
 impl SmartAccount for Vault {
