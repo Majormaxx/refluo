@@ -116,6 +116,11 @@ multisig call needs, see `adr/0008`.
 (`contracts/oracle-router/fuzz`, `contracts/policy-venue/fuzz`), going
 beyond property tests to fuzz the pricing math and the Blend `submit()`
 decoder respectively against inputs no property test happened to pick.
+`policy-venue`'s own `testnet_smoke_test.sh` goes further still: a real
+Blend V2 testnet pool, not calldata this workspace assumed the shape of,
+confirms Supply within cap allowed, Borrow and over-cap rejected, and a
+real submit() call actually changing the real pool's recorded position
+(`adr/0012`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered
