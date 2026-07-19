@@ -131,6 +131,21 @@ stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --s
 STATE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- state --account "$ACCOUNT" 2>&1 | tail -1)
 check "full-drain utilization attestation moves to Emergency(2)" "2" "$STATE"
 
+echo "==> [6] init_with_profile: Aggressive must resolve to its real 90%/97% thresholds"
+PROFILE_CFG="{
+  \"oracle_router\": \"$ORACLE_ID\", \"oracle_asset\": {\"Other\":\"XLM\"},
+  \"health_monitor\": \"$HM_ID\", \"usdc_token\": \"$USDC_ID\", \"keeper\": \"$ACCOUNT\",
+  \"tier0_bounds_min\": \"5000000000\", \"tier0_bounds_max\": \"20000000000\",
+  \"critical_floor\": \"1000000000\", \"tvl_cap\": \"1000000000000\",
+  \"preemptive_util_bps\": 1, \"full_drain_util_bps\": 2
+}"
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- init_with_profile --account "$ACCOUNT" --profile 2 --cfg "$PROFILE_CFG" --tier0_target "10000000000" >/dev/null
+PREEMPTIVE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- config --account "$ACCOUNT" 2>&1 | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['preemptive_util_bps'])")
+FULL_DRAIN=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- config --account "$ACCOUNT" 2>&1 | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['full_drain_util_bps'])")
+check "Aggressive profile resolves to preemptive_util_bps=9000, not the caller's 1" "9000" "$PREEMPTIVE"
+check "Aggressive profile resolves to full_drain_util_bps=9700, not the caller's 2" "9700" "$FULL_DRAIN"
+
 echo ""
 echo "==> $pass passed, $fail failed"
 if [ "$fail" -ne 0 ]; then

@@ -120,7 +120,10 @@ decoder respectively against inputs no property test happened to pick.
 Blend V2 testnet pool, not calldata this workspace assumed the shape of,
 confirms Supply within cap allowed, Borrow and over-cap rejected, and a
 real submit() call actually changing the real pool's recorded position
-(`adr/0012`).
+(`adr/0012`). `risk-engine`'s named `RiskProfile` presets
+(Conservative/Balanced/Aggressive) are confirmed live to resolve their
+real thresholds, not whatever values a caller's `TierConfig` happens to
+carry (`adr/0013`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered

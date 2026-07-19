@@ -101,6 +101,35 @@ pub struct TierState {
     pub tier1_positions: Map<Address, i128>,
 }
 
+/// The on-chain form of an operator's risk appetite: a named choice that
+/// resolves to real `TierConfig` utilization thresholds instead of an
+/// operator typing bps values by hand. This is deliberately just the
+/// utilization thresholds, not `tier0_bounds`/`tvl_cap`/`critical_floor`,
+/// those depend on the vault's actual capital, not on risk appetite, and
+/// stay explicit inputs to `init_with_profile` either way.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RiskProfile {
+    Conservative = 0,
+    Balanced = 1,
+    Aggressive = 2,
+}
+
+impl RiskProfile {
+    /// (preemptive_util_bps, full_drain_util_bps). Conservative drains
+    /// earliest to protect withdrawability first; Aggressive tolerates
+    /// more utilization in exchange for more yield before pulling back,
+    /// the same trade-off tier0_bounds_min/max express for liquid
+    /// buffer size, just for the Tier 1 venue-utilization dimension.
+    fn thresholds(self) -> (u32, u32) {
+        match self {
+            RiskProfile::Conservative => (7500, 8500),
+            RiskProfile::Balanced => (8500, 9200),
+            RiskProfile::Aggressive => (9000, 9700),
+        }
+    }
+}
+
 #[contracttype]
 pub enum DataKey {
     Config(Address),
@@ -142,6 +171,32 @@ pub struct RiskEngine;
 impl RiskEngine {
     pub fn init(e: Env, account: Address, cfg: TierConfig, tier0_target: i128) {
         account.require_auth();
+        Self::init_validated(&e, account, cfg, tier0_target);
+    }
+
+    /// Same as `init`, except `preemptive_util_bps`/`full_drain_util_bps`
+    /// on `cfg` are overwritten by `profile`'s real preset thresholds
+    /// rather than trusted from the caller; every other field (addresses,
+    /// `tvl_cap`, `critical_floor`, `tier0_bounds_min`/`max`) is used as
+    /// given, since none of it is a function of risk appetite. Lets a
+    /// caller reuse the exact same `TierConfig` shape `init` takes,
+    /// naming a risk profile instead of typing bps values by hand for
+    /// just those two fields.
+    pub fn init_with_profile(
+        e: Env,
+        account: Address,
+        profile: RiskProfile,
+        mut cfg: TierConfig,
+        tier0_target: i128,
+    ) {
+        account.require_auth();
+        let (preemptive_util_bps, full_drain_util_bps) = profile.thresholds();
+        cfg.preemptive_util_bps = preemptive_util_bps;
+        cfg.full_drain_util_bps = full_drain_util_bps;
+        Self::init_validated(&e, account, cfg, tier0_target);
+    }
+
+    fn init_validated(e: &Env, account: Address, cfg: TierConfig, tier0_target: i128) {
         if cfg.tier0_bounds_min > cfg.tier0_bounds_max
             || tier0_target < cfg.tier0_bounds_min
             || tier0_target > cfg.tier0_bounds_max
@@ -159,7 +214,7 @@ impl RiskEngine {
             .set(&DataKey::State(account.clone()), &SystemState::Normal);
         let tier = TierState {
             tier0_target,
-            tier1_positions: Map::new(&e),
+            tier1_positions: Map::new(e),
         };
         e.storage().persistent().set(&DataKey::Tier(account), &tier);
     }
@@ -1019,6 +1074,64 @@ mod test {
 
         cfg.full_drain_util_bps = 8000; // below preemptive: also invalid
         let result = risk.try_init(&account, &cfg, &100_000_000_000);
+        assert!(result.is_err());
+    }
+
+    fn profile_cfg(e: &Env) -> TierConfig {
+        TierConfig {
+            oracle_router: Address::generate(e),
+            oracle_asset: Asset::Other(Symbol::new(e, "USDC")),
+            health_monitor: Address::generate(e),
+            usdc_token: Address::generate(e),
+            keeper: Address::generate(e),
+            tier0_bounds_min: 50_000_000_000,
+            tier0_bounds_max: 200_000_000_000,
+            critical_floor: 10_000_000_000,
+            tvl_cap: 1_000_000_000_000,
+            // Deliberately wrong values: init_with_profile must overwrite
+            // these from the profile, not trust them from the caller.
+            preemptive_util_bps: 1,
+            full_drain_util_bps: 2,
+        }
+    }
+
+    #[test]
+    fn init_with_profile_resolves_real_thresholds_per_profile() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let cases = [
+            (RiskProfile::Conservative, 7500u32, 8500u32),
+            (RiskProfile::Balanced, 8500, 9200),
+            (RiskProfile::Aggressive, 9000, 9700),
+        ];
+        for (profile, expected_preemptive, expected_full_drain) in cases {
+            let risk = RiskEngineClient::new(&e, &e.register(RiskEngine, ()));
+            let account = Address::generate(&e);
+            risk.init_with_profile(&account, &profile, &profile_cfg(&e), &100_000_000_000);
+            let cfg = risk.config(&account);
+            assert_eq!(cfg.preemptive_util_bps, expected_preemptive);
+            assert_eq!(cfg.full_drain_util_bps, expected_full_drain);
+            assert_eq!(risk.state(&account), SystemState::Normal);
+        }
+    }
+
+    #[test]
+    fn init_with_profile_still_enforces_the_same_bounds_validation() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let risk = RiskEngineClient::new(&e, &e.register(RiskEngine, ()));
+        let account = Address::generate(&e);
+
+        // tier0_target outside bounds must still be rejected, same as
+        // plain init(): the profile only resolves the utilization
+        // thresholds, not the rest of the validation.
+        let result = risk.try_init_with_profile(
+            &account,
+            &RiskProfile::Balanced,
+            &profile_cfg(&e),
+            &1, // below tier0_bounds_min
+        );
         assert!(result.is_err());
     }
 }
