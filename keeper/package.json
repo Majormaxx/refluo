@@ -1,0 +1,23 @@
+{
+  "name": "refluo-keeper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test src/*.test.ts",
+    "sentinel": "tsx src/sentinel.ts",
+    "sentinel:once": "tsx src/sentinel.ts --once"
+  },
+  "dependencies": {
+    "@blend-capital/blend-sdk": "^3.3.0",
+    "@stellar/stellar-sdk": "^14.5.0",
+    "dotenv": "^16.4.5",
+    "risk-engine-client": "file:./packages/risk-engine-client"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.2"
+  }
+}

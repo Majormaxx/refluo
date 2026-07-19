@@ -76,7 +76,8 @@ refluo/
                 not part of the product), and integration-tests/
                 (cross-contract, dev-only)
   adr/          architecture decision records
-  keeper/       off-chain forecaster/sentinel/reporter loops (not started)
+  keeper/       off-chain loops: sentinel's utilization monitor is real
+                and live-verified, Forecaster/reporter not started
   sdk/          TypeScript SDK for agent operators (not started)
   dashboard/    operator-facing web app (not started)
   drills/       scripted adversarial scenarios, some live (see Testing)
@@ -123,7 +124,11 @@ real submit() call actually changing the real pool's recorded position
 (`adr/0012`). `risk-engine`'s named `RiskProfile` presets
 (Conservative/Balanced/Aggressive) are confirmed live to resolve their
 real thresholds, not whatever values a caller's `TierConfig` happens to
-carry (`adr/0013`).
+carry (`adr/0013`). `keeper/`'s sentinel utilization monitor has 8 pure
+unit tests (`npm test`, no network needed) plus a real testnet run: the
+real Blend pool's organic utilization from other users, not a seeded
+number, correctly escalated a real `risk-engine` deployment to Emergency
+(`adr/0014`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered

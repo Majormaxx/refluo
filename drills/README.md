@@ -33,16 +33,22 @@ Planned and in-progress drills:
   `policy-recall` contains zero references to oracle status anywhere, so
   nothing there can be blocked by one. See `adr/0009`.
 - **XLM auto-swap drill**: sandwich/slippage attack simulation against the
-  Tier 0 fee-floor top-up swap path. Not started, depends on the keeper's
-  sentinel loop, which doesn't exist yet.
+  Tier 0 fee-floor top-up swap path. Not started. The sentinel loop this
+  would live alongside now exists for utilization monitoring
+  (`keeper/src/sentinel.ts`, `adr/0014`), but the XLM fee-floor swap
+  mechanism itself hasn't been built, this drill depends on that, not on
+  the sentinel loop's existence generally.
 - **Utilization spike drill**: scripted 80%→95% Blend reserve utilization
   against real testnet pools, assert pre-emptive drain fires before a
-  withdrawal failure would. `risk-engine`'s tier state machine has both
-  thresholds now, 85% preemptive drain and 92% full drain, both
-  live-verified with keeper-attested values (`adr/0011`). What's not
-  built is the drill's real half: scripted utilization against a real
-  Blend testnet pool, not an attested number a keeper (or this drill)
-  supplies by hand.
+  withdrawal failure would. Substantially closed: `risk-engine`'s tier
+  state machine has both thresholds (85% preemptive drain, 92% full
+  drain, `adr/0011`), and `keeper/src/sentinel.ts` reads real Blend
+  reserve utilization and attests it, no hand-supplied number, live
+  testnet run confirmed a real 85.55% pool utilization correctly
+  escalating a real deployment to Emergency (`adr/0014`). What's not
+  built is the scripted 80%→95% spike itself, the live run so far
+  observed the pool's real organic utilization, not a controlled ramp
+  from 80% to 95%.
 - **Keeper-key-compromise drill**: quantify max griefing damage from a
   compromised recall key against the rate limits in `policy-recall`. Not
   started as a standalone drill, but `policy-recall`'s own property tests
