@@ -32,12 +32,20 @@ Planned and in-progress drills:
   reset. Recalls staying available is verified by source inspection,
   `policy-recall` contains zero references to oracle status anywhere, so
   nothing there can be blocked by one. See `adr/0009`.
-- **XLM auto-swap drill**: sandwich/slippage attack simulation against the
-  Tier 0 fee-floor top-up swap path. Not started. The sentinel loop this
-  would live alongside now exists for utilization monitoring
-  (`keeper/src/sentinel.ts`, `adr/0014`), but the XLM fee-floor swap
-  mechanism itself hasn't been built, this drill depends on that, not on
-  the sentinel loop's existence generally.
+- **XLM auto-swap sandwich drill** (`xlm_swap_sandwich_drill.sh`):
+  sandwich/slippage attack simulation against the Tier 0 fee-floor top-up
+  swap path. Live on testnet, two real halves: `policy-swap.enforce()`
+  rejects a sandwich-shaped near-zero `amount_out_min` outright, then a
+  real attacker front-run executes against the real Soroswap testnet
+  pool, measurably shifting its real reserves, and the victim's original
+  transaction, submitted with its pre-manipulation zero-tolerance quote,
+  reverts for real against the real router. A restoring back-run leg
+  follows, and a production-realistic 97%-floor swap is confirmed to
+  still succeed once the pool recovers, the floor blocks a genuine attack
+  without breaking on ordinary market movement. See `adr/0015`, which
+  also covers why the router is Soroswap, not the PRD's original "SDEX"
+  wording, and `keeper/src/swap.ts` for the real XLM balance-below-floor
+  trigger this drill's swap path depends on.
 - **Utilization spike drill**: scripted 80%→95% Blend reserve utilization
   against real testnet pools, assert pre-emptive drain fires before a
   withdrawal failure would. Substantially closed: `risk-engine`'s tier

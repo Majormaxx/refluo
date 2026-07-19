@@ -43,9 +43,11 @@ jobs:
       matrix:
         contract:
           - vault
+          - policy-admin-threshold
           - policy-venue
           - policy-recall
           - policy-session
+          - policy-swap
           - oracle-router
           - health-monitor
           - timelock

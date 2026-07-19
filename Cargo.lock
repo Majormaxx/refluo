@@ -1499,6 +1499,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "refluo-policy-swap"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "refluo-common",
+ "soroban-sdk 26.1.0",
+ "stellar-accounts",
+]
+
+[[package]]
 name = "refluo-policy-venue"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "contracts/vault",
     "contracts/policy-venue",
     "contracts/policy-recall",
+    "contracts/policy-swap",
     "contracts/policy-session",
     "contracts/policy-admin-threshold",
     "contracts/oracle-router",

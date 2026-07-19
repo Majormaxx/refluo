@@ -48,7 +48,7 @@ Not mainnet-deployed.
 
 ## Architecture
 
-Nine on-chain contracts plus one off-chain keeper:
+Ten on-chain contracts plus one off-chain keeper:
 
 | Contract | Role |
 |---|---|
@@ -57,27 +57,31 @@ Nine on-chain contracts plus one off-chain keeper:
 | `policy-venue` | YieldVenueAllowlist: decodes and caps venue deployment calls |
 | `policy-recall` | RecallExecutor: venue-to-vault-only fund recall, rate-limited |
 | `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
+| `policy-swap` | SwapExecutor: capped USDC->XLM top-up via Soroswap, oracle-derived slippage floor |
 | `oracle-router` | Dual-feed price reads with staleness gating and rate-of-change clamping |
 | `health-monitor` | Gate-seal circuit breaker: guardian-triggered pause, 72h auto-expiry, admin-gated early resume |
 | `timelock` | `propose -> 24h delay -> execute` for risk-increasing admin actions |
 | `risk-engine` | On-chain bounds-checker: reads real oracle status, pause status, and USDC balance; no deployment above NORMAL |
 
-An off-chain keeper (`keeper/`, not yet built) makes the decisions
-(burn forecasting, oracle cross-checks, rebalance scheduling) that
-contracts only ever check against a bound. This split keeps the audited
-on-chain surface small.
+An off-chain keeper (`keeper/`) makes the decisions (burn forecasting,
+oracle cross-checks, rebalance scheduling) that contracts only ever check
+against a bound. This split keeps the audited on-chain surface small.
+Its utilization monitor and XLM fee-floor swap trigger are real and
+live-verified (see Testing); the Forecaster and reporter loops the PRD
+also names are not started.
 
 ## Project structure
 
 ```
 refluo/
-  contracts/    the nine contracts above, plus common/ (shared types),
+  contracts/    the ten contracts above, plus common/ (shared types),
                 mock-price-feed/ (real PriceFeedTrait impl, drill-only,
                 not part of the product), and integration-tests/
                 (cross-contract, dev-only)
   adr/          architecture decision records
-  keeper/       off-chain loops: sentinel's utilization monitor is real
-                and live-verified, Forecaster/reporter not started
+  keeper/       off-chain loops: sentinel's utilization monitor and
+                swap.ts's XLM fee-floor trigger are real and
+                live-verified, Forecaster/reporter not started
   sdk/          TypeScript SDK for agent operators (not started)
   dashboard/    operator-facing web app (not started)
   drills/       scripted adversarial scenarios, some live (see Testing)
@@ -124,17 +128,34 @@ real submit() call actually changing the real pool's recorded position
 (`adr/0012`). `risk-engine`'s named `RiskProfile` presets
 (Conservative/Balanced/Aggressive) are confirmed live to resolve their
 real thresholds, not whatever values a caller's `TierConfig` happens to
-carry (`adr/0013`). `keeper/`'s sentinel utilization monitor has 8 pure
-unit tests (`npm test`, no network needed) plus a real testnet run: the
-real Blend pool's organic utilization from other users, not a seeded
-number, correctly escalated a real `risk-engine` deployment to Emergency
-(`adr/0014`).
+carry (`adr/0013`). `policy-swap`'s slippage floor is checked against a
+real cross-contract `OracleRouter` price read, not a caller-supplied
+number: 18 unit/property tests plus a live `testnet_smoke_test.sh` that
+authorizes a real `swap_exact_tokens_for_tokens` call against the real
+Soroswap testnet router and confirms a real 5 USDC swap actually moves
+real USDC out and real XLM in through the real live USDC/XLM pair
+(`adr/0015`).
+`keeper/`'s sentinel utilization monitor has 8 pure unit tests
+(`npm test`, no network needed) plus a real testnet run: the real Blend
+pool's organic utilization from other users, not a seeded number,
+correctly escalated a real `risk-engine` deployment to Emergency
+(`adr/0014`). `keeper/src/swap.ts`, the XLM fee-floor trigger, has 9
+further pure unit tests plus a real testnet run of its own: an XLM
+balance genuinely below the configured floor triggered a real signed
+swap through the real Soroswap router, confirmed by real balance reads
+before and after, and a second run once above the floor correctly took
+no action (`adr/0015`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered
 HealthMonitor, not merely reporting the status (`adr/0010`), RiskEngine
 blocks deployment, and the system recovers on its own once the feed
-does. Don't infer coverage from a `#[cfg(test)]`
+does. `drills/xlm_swap_sandwich_drill.sh` runs a real sandwich attack
+against the real Soroswap pool: a real attacker front-run measurably
+shifts the real pool's price, the victim's original zero-tolerance quote
+then reverts for real against the real router, and a
+production-realistic 97%-floor swap still succeeds once the pool is
+restored (`adr/0015`). Don't infer coverage from a `#[cfg(test)]`
 module existing, check what's actually asserted.
 
 ## Decisions & trade-offs

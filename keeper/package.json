@@ -7,13 +7,18 @@
     "build": "tsc",
     "test": "node --import tsx --test src/*.test.ts",
     "sentinel": "tsx src/sentinel.ts",
-    "sentinel:once": "tsx src/sentinel.ts --once"
+    "sentinel:once": "tsx src/sentinel.ts --once",
+    "swap-sentinel": "tsx src/swap.ts",
+    "swap-sentinel:once": "tsx src/swap.ts --once"
   },
   "dependencies": {
     "@blend-capital/blend-sdk": "^3.3.0",
     "@stellar/stellar-sdk": "^14.5.0",
     "dotenv": "^16.4.5",
-    "risk-engine-client": "file:./packages/risk-engine-client"
+    "risk-engine-client": "file:./packages/risk-engine-client",
+    "token-client": "file:./packages/token-client",
+    "soroswap-router-client": "file:./packages/soroswap-router-client",
+    "oracle-router-client": "file:./packages/oracle-router-client"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
