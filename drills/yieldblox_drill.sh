@@ -11,6 +11,12 @@
 # deliberately confirm recovery via keeper_advance_state, this drill only
 # exercises the oracle-level auto-resume, not that keeper-gated step.
 #
+# Also verifies OracleRouter's own check_and_trip() (adr/0010): registered
+# as one of HealthMonitor's guardians, it doesn't just report Degraded, it
+# really calls pause() on a real cross-contract call, self-authorized as
+# its own contract address, so the vault pauses without a human noticing
+# the feed first.
+#
 # Requires: stellar-cli, a funded testnet identity. Create one with:
 #   stellar keys generate refluo-testnet --network testnet --fund
 set -euo pipefail
@@ -55,8 +61,10 @@ stellar contract invoke --id "$ORACLE_ID" --source "$IDENTITY" --network testnet
 echo "==> Deploying fresh health-monitor + risk-engine wired to this oracle-router"
 HM_ID=$(stellar contract deploy --wasm target/wasm32v1-none/release/refluo_health_monitor.wasm \
   --source "$IDENTITY" --network testnet 2>&1 | tail -1)
+# ORACLE_ID is registered as a guardian too: that's what lets its own
+# check_and_trip() really call pause() on this HealthMonitor instance.
 stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
-  -- init_guardians --admin "$ACCOUNT" --guardians "[\"$ACCOUNT\"]" >/dev/null
+  -- init_guardians --admin "$ACCOUNT" --guardians "[\"$ACCOUNT\", \"$ORACLE_ID\"]" >/dev/null
 
 RE_ID=$(stellar contract deploy --wasm target/wasm32v1-none/release/refluo_risk_engine.wasm \
   --source "$IDENTITY" --network testnet 2>&1 | tail -1)
@@ -106,11 +114,22 @@ QUOTE=$(stellar contract invoke --id "$ORACLE_ID" --source "$IDENTITY" --network
 STATUS=$(echo "$QUOTE" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
 check "status Degraded after a real 100x single-feed spike" "2" "$STATUS"
 
+echo "==> [3b] OracleRouter's own check_and_trip must really pause the real HealthMonitor"
+PRE_STATUS=$(stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet -- status 2>&1 | tail -1)
+check "HealthMonitor unpaused before check_and_trip runs" "false" "$PRE_STATUS"
+TRIPPED=$(stellar contract invoke --id "$ORACLE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- check_and_trip --asset '{"Other":"XLM"}' --health_monitor "$HM_ID" 2>&1 | tail -1)
+check "check_and_trip reports tripped" "true" "$TRIPPED"
+HM_STATUS=$(stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet -- status 2>&1 | tail -1)
+check "HealthMonitor really paused by a real cross-contract call" "true" "$HM_STATUS"
+
 echo "==> [4] check_and_trip after the spike: RiskEngine must escalate, deployment blocked"
 stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
   -- check_and_trip --account "$ACCOUNT" >/dev/null
 STATE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- state --account "$ACCOUNT" 2>&1 | tail -1)
-check "SystemState Emergency after the spike" "2" "$STATE"
+# Paused (3), not Emergency: HealthMonitor is genuinely paused as of step
+# [3b] now, and RiskEngine's own check_and_trip checks pause status first.
+check "SystemState Paused after the spike (HealthMonitor really paused)" "3" "$STATE"
 ALLOWED=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- deploy_allowed --account "$ACCOUNT" --amount "1" 2>&1 | tail -1)
 check "deploy_allowed false after the spike (zero deployments)" "false" "$ALLOWED"
 
@@ -124,9 +143,11 @@ check "OracleRouter auto-resumes Healthy once the feed recovers, no reset call n
 
 echo ""
 echo "==> $pass passed, $fail failed"
-echo "Note: RiskEngine's SystemState stays Emergency here by design, recovery"
-echo "is keeper-gated (adr/0006), not automatic; this drill only proves the"
-echo "oracle-level auto-resume, not RiskEngine's separate recovery path."
+echo "Note: RiskEngine's SystemState stays Paused here by design, recovery"
+echo "is keeper-gated (adr/0006) and HealthMonitor's own pause needs an"
+echo "admin's resume_early() or its 72h auto-expiry, neither automatic;"
+echo "this drill only proves the oracle-level auto-resume and the real"
+echo "guardian pause, not either contract's separate recovery path."
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi

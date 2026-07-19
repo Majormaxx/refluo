@@ -24,12 +24,14 @@ Planned and in-progress drills:
   feed recovers. Live on testnet: a real `mock-price-feed` contract
   stands in for the attacker-controlled feed (a real testnet feed can't
   be made to lie on demand), seeded to match Reflector's real live price,
-  then spiked. 7/7 assertions passed on a real run: Healthy before, real
-  cross-contract Degraded and RiskEngine Emergency after the spike with
-  deployment blocked, real auto-resume once the feed is reset. Recalls
-  staying available is verified by source inspection, `policy-recall`
-  contains zero references to oracle status anywhere, so nothing there
-  can be blocked by one. See `adr/0009`.
+  then spiked. 10/10 assertions passed on a real run: Healthy before, real
+  cross-contract Degraded after the spike, OracleRouter's own
+  `check_and_trip` really pausing a real registered HealthMonitor rather
+  than just reporting the status (`adr/0010`), RiskEngine escalating to
+  Paused with deployment blocked, real auto-resume once the feed is
+  reset. Recalls staying available is verified by source inspection,
+  `policy-recall` contains zero references to oracle status anywhere, so
+  nothing there can be blocked by one. See `adr/0009`.
 - **XLM auto-swap drill**: sandwich/slippage attack simulation against the
   Tier 0 fee-floor top-up swap path. Not started, depends on the keeper's
   sentinel loop, which doesn't exist yet.

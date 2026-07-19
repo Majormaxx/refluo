@@ -16,9 +16,20 @@
 
 use sep_40_oracle::{Asset, PriceData as Sep40PriceData, PriceFeedClient};
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Env,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, Env,
 };
+
+/// Mirrors health-monitor's real `pause(guardian: Address)` (see adr/0010).
+/// Not a shared dependency: health-monitor is on soroban-sdk 26.1.0,
+/// oracle-router is isolated on 25.3 (adr/0005), and cross-contract calls
+/// are structural at the XDR level, so a local mirror of the one method
+/// this contract calls is correct without sharing a compilation unit.
+#[allow(dead_code)]
+#[contractclient(name = "HealthMonitorClient")]
+trait HealthMonitorInterface {
+    fn pause(e: Env, guardian: Address);
+}
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,12 +236,24 @@ impl OracleRouter {
         quote
     }
 
-    /// Permissionless crank: anyone can call this to confirm the router
-    /// currently reports a tripped state, without depending on a keeper
-    /// being alive. HealthMonitor reads this once it exists.
-    pub fn check_and_trip(e: Env, asset: Asset) -> bool {
-        let q = Self::get_price(e, asset);
-        matches!(q.status, OracleStatus::Degraded | OracleStatus::HardStop)
+    /// Permissionless crank: anyone can call this, and on a genuinely
+    /// degraded read it really pauses `health_monitor`, a real
+    /// cross-contract call, not a status callers have to notice and act
+    /// on themselves. Self-authorizing: this contract's own address is
+    /// the `guardian` argument, valid only because this contract is
+    /// really the caller in that frame, the same pattern `timelock` uses
+    /// to call `risk-engine`. Uses `try_pause` deliberately: a vault that
+    /// hasn't registered OracleRouter as a guardian on its own
+    /// `health_monitor` must still get a correct degraded/not-degraded
+    /// answer back, not a reverted call. See adr/0010.
+    pub fn check_and_trip(e: Env, asset: Asset, health_monitor: Address) -> bool {
+        let q = Self::get_price(e.clone(), asset);
+        let degraded = matches!(q.status, OracleStatus::Degraded | OracleStatus::HardStop);
+        if degraded {
+            let _ = HealthMonitorClient::new(&e, &health_monitor)
+                .try_pause(&e.current_contract_address());
+        }
+        degraded
     }
 }
 
@@ -559,6 +582,66 @@ mod test {
         }
     }
 
+    /// Real, compiled, deployed-in-test contract implementing the exact
+    /// `HealthMonitorInterface` `check_and_trip` cross-calls, mirroring
+    /// the real `health-monitor`'s guardian-gated `pause()`: proves the
+    /// real cross-contract invocation and self-authorization mechanics,
+    /// not an assumption about them.
+    #[contracttype]
+    enum MockHmKey {
+        Guardians,
+        PauseCount,
+    }
+
+    #[contract]
+    struct MockHealthMonitor;
+
+    #[contractimpl]
+    impl MockHealthMonitor {
+        pub fn set_guardians(e: Env, guardians: Vec<Address>) {
+            e.storage()
+                .instance()
+                .set(&MockHmKey::Guardians, &guardians);
+        }
+
+        pub fn pause_count(e: Env) -> u32 {
+            e.storage()
+                .instance()
+                .get(&MockHmKey::PauseCount)
+                .unwrap_or(0)
+        }
+    }
+
+    #[allow(dead_code)]
+    #[contractclient(name = "MockHealthMonitorTestClient")]
+    trait MockHmSetup {
+        fn set_guardians(e: Env, guardians: Vec<Address>);
+        fn pause_count(e: Env) -> u32;
+    }
+
+    #[contractimpl]
+    impl HealthMonitorInterface for MockHealthMonitor {
+        fn pause(e: Env, guardian: Address) {
+            guardian.require_auth();
+            let guardians: Vec<Address> = e
+                .storage()
+                .instance()
+                .get(&MockHmKey::Guardians)
+                .unwrap_or(vec![&e]);
+            if !guardians.contains(&guardian) {
+                panic!("guardian not registered");
+            }
+            let count: u32 = e
+                .storage()
+                .instance()
+                .get(&MockHmKey::PauseCount)
+                .unwrap_or(0);
+            e.storage()
+                .instance()
+                .set(&MockHmKey::PauseCount, &(count + 1));
+        }
+    }
+
     fn advance_to_realistic_ledger(e: &Env) {
         e.ledger().with_mut(|l| {
             l.timestamp = 2_000_000_000;
@@ -857,6 +940,93 @@ mod test {
         let q = router.get_price(&asset);
         assert_eq!(q.status, OracleStatus::Healthy);
         assert_eq!(q.price, 103_00000000, "TWAP of the 3 primary records");
+    }
+
+    // ################## CHECK_AND_TRIP (real HealthMonitor pause) ##################
+
+    #[test]
+    fn check_and_trip_pauses_real_health_monitor_when_degraded() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (router, primary, secondary, asset) = setup(&e);
+        router.set_config(&asset, &default_cfg(&primary, &secondary));
+
+        let now = e.ledger().timestamp();
+        push(&e, &primary, &asset, 100_00000000, now);
+        push(&e, &secondary, &asset, 100_10000000, now);
+        router.get_price(&asset);
+
+        e.ledger().with_mut(|l| l.timestamp += 300);
+        let now2 = e.ledger().timestamp();
+        push(&e, &primary, &asset, 100_00000000, now2);
+        push(&e, &secondary, &asset, 1_000_000_000_000, now2);
+
+        let hm_id = e.register(MockHealthMonitor, ());
+        let hm_setup = MockHealthMonitorTestClient::new(&e, &hm_id);
+        hm_setup.set_guardians(&Vec::from_array(&e, [router.address.clone()]));
+
+        let tripped = router.check_and_trip(&asset, &hm_id);
+        assert!(tripped, "a genuinely degraded read must report tripped");
+        assert_eq!(
+            hm_setup.pause_count(),
+            1,
+            "check_and_trip must actually call the real HealthMonitor's pause(), not just report a status"
+        );
+    }
+
+    #[test]
+    fn check_and_trip_does_not_pause_when_healthy() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (router, primary, secondary, asset) = setup(&e);
+        router.set_config(&asset, &default_cfg(&primary, &secondary));
+
+        let now = e.ledger().timestamp();
+        push(&e, &primary, &asset, 100_00000000, now);
+        push(&e, &secondary, &asset, 100_10000000, now);
+
+        let hm_id = e.register(MockHealthMonitor, ());
+        let hm_setup = MockHealthMonitorTestClient::new(&e, &hm_id);
+        hm_setup.set_guardians(&Vec::from_array(&e, [router.address.clone()]));
+
+        let tripped = router.check_and_trip(&asset, &hm_id);
+        assert!(!tripped);
+        assert_eq!(
+            hm_setup.pause_count(),
+            0,
+            "a healthy read must never touch HealthMonitor at all"
+        );
+    }
+
+    #[test]
+    fn check_and_trip_still_reports_tripped_even_if_guardian_unregistered() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let (router, primary, secondary, asset) = setup(&e);
+        router.set_config(&asset, &default_cfg(&primary, &secondary));
+
+        let now = e.ledger().timestamp();
+        push(&e, &primary, &asset, 100_00000000, now);
+        push(&e, &secondary, &asset, 100_10000000, now);
+        router.get_price(&asset);
+
+        e.ledger().with_mut(|l| l.timestamp += 300);
+        let now2 = e.ledger().timestamp();
+        push(&e, &primary, &asset, 100_00000000, now2);
+        push(&e, &secondary, &asset, 1_000_000_000_000, now2);
+
+        let hm_id = e.register(MockHealthMonitor, ());
+        let hm_setup = MockHealthMonitorTestClient::new(&e, &hm_id);
+        // Deliberately never registers the router as a guardian: a vault
+        // that hasn't opted into the automated guardian must still get a
+        // correct answer back, not a reverted call.
+        hm_setup.set_guardians(&Vec::new(&e));
+
+        let tripped = router.check_and_trip(&asset, &hm_id);
+        assert!(
+            tripped,
+            "an unregistered guardian must not turn a real degraded read into a failed call"
+        );
     }
 
     // ################## PROPERTY TESTS ##################

@@ -118,8 +118,10 @@ beyond property tests to fuzz the pricing math and the Blend `submit()`
 decoder respectively against inputs no property test happened to pick.
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
-it, RiskEngine blocks deployment, and the system recovers on its own once
-the feed does, see `adr/0009`. Don't infer coverage from a `#[cfg(test)]`
+it, its own `check_and_trip` really pauses a real registered
+HealthMonitor, not merely reporting the status (`adr/0010`), RiskEngine
+blocks deployment, and the system recovers on its own once the feed
+does. Don't infer coverage from a `#[cfg(test)]`
 module existing, check what's actually asserted.
 
 ## Decisions & trade-offs
