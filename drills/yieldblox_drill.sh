@@ -75,7 +75,7 @@ stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --s
     \"oracle_router\": \"$ORACLE_ID\", \"oracle_asset\": {\"Other\":\"XLM\"},
     \"health_monitor\": \"$HM_ID\", \"usdc_token\": \"CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA\",
     \"keeper\": \"$ACCOUNT\", \"tier0_bounds_min\": \"1\", \"tier0_bounds_max\": \"1000000000000\",
-    \"critical_floor\": \"0\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500
+    \"critical_floor\": \"0\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500, \"full_drain_util_bps\": 9200
   }" --tier0_target "1" >/dev/null
 
 pass=0

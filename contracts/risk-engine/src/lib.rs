@@ -87,6 +87,11 @@ pub struct TierConfig {
     /// Keeper-attested utilization (bps) at or above this triggers
     /// PreemptiveDrain via the utilization path.
     pub preemptive_util_bps: u32,
+    /// Keeper-attested utilization (bps) at or above this triggers a full
+    /// drain (Emergency) via the utilization path, not just PreemptiveDrain.
+    /// Must be strictly greater than `preemptive_util_bps`, checked at
+    /// `init()`.
+    pub full_drain_util_bps: u32,
 }
 
 #[contracttype]
@@ -142,6 +147,7 @@ impl RiskEngine {
             || tier0_target > cfg.tier0_bounds_max
             || cfg.tvl_cap <= 0
             || cfg.critical_floor < 0
+            || cfg.full_drain_util_bps <= cfg.preemptive_util_bps
         {
             panic_with_error!(e, RiskError::InvalidConfig);
         }
@@ -327,20 +333,30 @@ impl RiskEngine {
             return;
         }
 
-        if to == SystemState::PreemptiveDrain && to >= current {
+        // Utilization-driven upward path: PreemptiveDrain at
+        // preemptive_util_bps, a full drain (Emergency) at the higher
+        // full_drain_util_bps, both keeper-attested since venue
+        // utilization is genuinely off-chain data (adr/0006), neither
+        // derivable from oracle status or the on-chain balance check
+        // check_and_trip already covers.
+        if matches!(to, SystemState::PreemptiveDrain | SystemState::Emergency) && to >= current {
             let util = utilization_bps
                 .unwrap_or_else(|| panic_with_error!(e, RiskError::InvalidTransition));
-            if util < cfg.preemptive_util_bps {
+            let required = if to == SystemState::Emergency {
+                cfg.full_drain_util_bps
+            } else {
+                cfg.preemptive_util_bps
+            };
+            if util < required {
                 panic_with_error!(e, RiskError::InvalidTransition);
             }
-            e.storage().persistent().set(
-                &DataKey::State(account.clone()),
-                &SystemState::PreemptiveDrain,
-            );
+            e.storage()
+                .persistent()
+                .set(&DataKey::State(account.clone()), &to);
             StateChanged {
                 account,
                 from: current,
-                to: SystemState::PreemptiveDrain,
+                to,
             }
             .publish(&e);
             return;
@@ -542,6 +558,7 @@ mod test {
             critical_floor: 10_000_000_000,
             tvl_cap: 1_000_000_000_000,
             preemptive_util_bps: 8500,
+            full_drain_util_bps: 9200,
         };
         risk.init(&account, &cfg, &100_000_000_000);
 
@@ -585,6 +602,7 @@ mod test {
             critical_floor: 10_000_000_000,
             tvl_cap: 1_000_000_000_000,
             preemptive_util_bps: 8500,
+            full_drain_util_bps: 9200,
         };
         let result = risk.try_init(&account, &cfg, &10_000_000_000);
         assert!(result.is_err());
@@ -921,5 +939,86 @@ mod test {
         );
         assert!(result.is_err());
         assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+    }
+
+    #[test]
+    fn keeper_can_trigger_full_drain_via_utilization_attestation() {
+        let e = Env::default();
+        let f = setup(&e);
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+
+        // 92%+, full_drain_util_bps, must reach Emergency directly from
+        // Normal, not stop at PreemptiveDrain: a fast utilization spike
+        // shouldn't need two separate keeper calls to escalate correctly.
+        f.risk
+            .keeper_advance_state(&f.account, &f.keeper, &SystemState::Emergency, &Some(9500));
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+    }
+
+    #[test]
+    fn utilization_between_preemptive_and_full_drain_reaches_only_preemptive_drain() {
+        let e = Env::default();
+        let f = setup(&e);
+
+        // 90% clears preemptive_util_bps (8500) but not full_drain_util_bps
+        // (9200): claiming Emergency at this utilization must be rejected,
+        // the tier between the two thresholds only justifies PreemptiveDrain.
+        let result = f.risk.try_keeper_advance_state(
+            &f.account,
+            &f.keeper,
+            &SystemState::Emergency,
+            &Some(9000),
+        );
+        assert!(result.is_err());
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+
+        f.risk.keeper_advance_state(
+            &f.account,
+            &f.keeper,
+            &SystemState::PreemptiveDrain,
+            &Some(9000),
+        );
+        assert_eq!(f.risk.state(&f.account), SystemState::PreemptiveDrain);
+    }
+
+    #[test]
+    fn keeper_utilization_full_drain_attestation_below_threshold_rejected() {
+        let e = Env::default();
+        let f = setup(&e);
+        let result = f.risk.try_keeper_advance_state(
+            &f.account,
+            &f.keeper,
+            &SystemState::Emergency,
+            &Some(9100), // below full_drain_util_bps (9200)
+        );
+        assert!(result.is_err());
+        assert_eq!(f.risk.state(&f.account), SystemState::Normal);
+    }
+
+    #[test]
+    fn init_rejects_full_drain_threshold_not_above_preemptive() {
+        let e = Env::default();
+        let risk = RiskEngineClient::new(&e, &e.register(RiskEngine, ()));
+        let account = Address::generate(&e);
+        e.mock_all_auths();
+        let mut cfg = TierConfig {
+            oracle_router: Address::generate(&e),
+            oracle_asset: Asset::Other(Symbol::new(&e, "USDC")),
+            health_monitor: Address::generate(&e),
+            usdc_token: Address::generate(&e),
+            keeper: Address::generate(&e),
+            tier0_bounds_min: 50_000_000_000,
+            tier0_bounds_max: 200_000_000_000,
+            critical_floor: 10_000_000_000,
+            tvl_cap: 1_000_000_000_000,
+            preemptive_util_bps: 8500,
+            full_drain_util_bps: 8500, // equal, not strictly greater: invalid
+        };
+        let result = risk.try_init(&account, &cfg, &100_000_000_000);
+        assert!(result.is_err());
+
+        cfg.full_drain_util_bps = 8000; // below preemptive: also invalid
+        let result = risk.try_init(&account, &cfg, &100_000_000_000);
+        assert!(result.is_err());
     }
 }

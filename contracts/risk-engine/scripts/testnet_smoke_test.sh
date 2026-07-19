@@ -55,7 +55,7 @@ CFG="{
   \"oracle_router\": \"$ORACLE_ID\", \"oracle_asset\": {\"Other\":\"XLM\"},
   \"health_monitor\": \"$HM_ID\", \"usdc_token\": \"$USDC_ID\", \"keeper\": \"$ACCOUNT\",
   \"tier0_bounds_min\": \"5000000000\", \"tier0_bounds_max\": \"20000000000\",
-  \"critical_floor\": \"1000000000\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500
+  \"critical_floor\": \"1000000000\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500, \"full_drain_util_bps\": 9200
 }"
 
 echo "==> init risk-engine (account=keeper=$ACCOUNT)"
@@ -121,6 +121,15 @@ stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --s
   -- keeper_advance_state --account "$ACCOUNT" --keeper "$ACCOUNT" --to 1 --utilization_bps 9000 >/dev/null
 STATE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- state --account "$ACCOUNT" 2>&1 | tail -1)
 check "utilization attestation above threshold moves to PreemptiveDrain(1)" "1" "$STATE"
+
+echo "==> [5] full drain: utilization above full_drain_util_bps (9200) reaches Emergency directly"
+expect_err "utilization between thresholds (9000 < 9200) rejected for Emergency" \
+  stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- keeper_advance_state --account "$ACCOUNT" --keeper "$ACCOUNT" --to 2 --utilization_bps 9000
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- keeper_advance_state --account "$ACCOUNT" --keeper "$ACCOUNT" --to 2 --utilization_bps 9500 >/dev/null
+STATE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- state --account "$ACCOUNT" 2>&1 | tail -1)
+check "full-drain utilization attestation moves to Emergency(2)" "2" "$STATE"
 
 echo ""
 echo "==> $pass passed, $fail failed"

@@ -47,7 +47,7 @@ CFG="{
   \"oracle_router\": \"$ORACLE_ID\", \"oracle_asset\": {\"Other\":\"XLM\"},
   \"health_monitor\": \"$HM_ID\", \"usdc_token\": \"$USDC_ID\", \"keeper\": \"$ACCOUNT\",
   \"tier0_bounds_min\": \"5000000000\", \"tier0_bounds_max\": \"20000000000\",
-  \"critical_floor\": \"1000000000\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500
+  \"critical_floor\": \"1000000000\", \"tvl_cap\": \"1000000000000\", \"preemptive_util_bps\": 8500, \"full_drain_util_bps\": 9200
 }"
 stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
   -- init --account "$ACCOUNT" --cfg "$CFG" --tier0_target "10000000000" >/dev/null

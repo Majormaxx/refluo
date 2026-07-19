@@ -37,10 +37,12 @@ Planned and in-progress drills:
   sentinel loop, which doesn't exist yet.
 - **Utilization spike drill**: scripted 80%→95% Blend reserve utilization
   against real testnet pools, assert pre-emptive drain fires before a
-  withdrawal failure would. Not started as a live drill script.
-  `risk-engine`'s tier state machine is built and live-verified, including
-  the 85% preemptive-drain threshold; the 92% full-drain escalation this
-  drill would exercise isn't implemented yet either.
+  withdrawal failure would. `risk-engine`'s tier state machine has both
+  thresholds now, 85% preemptive drain and 92% full drain, both
+  live-verified with keeper-attested values (`adr/0011`). What's not
+  built is the drill's real half: scripted utilization against a real
+  Blend testnet pool, not an attested number a keeper (or this drill)
+  supplies by hand.
 - **Keeper-key-compromise drill**: quantify max griefing damage from a
   compromised recall key against the rate limits in `policy-recall`. Not
   started as a standalone drill, but `policy-recall`'s own property tests
