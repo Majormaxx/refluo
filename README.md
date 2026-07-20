@@ -66,9 +66,9 @@ Ten on-chain contracts plus one off-chain keeper:
 An off-chain keeper (`keeper/`) makes the decisions (burn forecasting,
 oracle cross-checks, rebalance scheduling) that contracts only ever check
 against a bound. This split keeps the audited on-chain surface small.
-Its utilization monitor and XLM fee-floor swap trigger are real and
-live-verified (see Testing); the Forecaster and reporter loops the PRD
-also names are not started.
+Its utilization monitor, XLM fee-floor swap trigger, and Tier 0 sizing
+(Forecaster) are real and live-verified (see Testing); the reporter loop
+the PRD also names is not started.
 
 ## Project structure
 
@@ -79,10 +79,10 @@ refluo/
                 not part of the product), and integration-tests/
                 (cross-contract, dev-only)
   adr/          architecture decision records
-  keeper/       off-chain loops: sentinel's utilization monitor and
-                swap.ts's XLM fee-floor trigger are real and
-                live-verified, swap.ts now submits through a real vault
-                (adr/0016), Forecaster/reporter not started
+  keeper/       off-chain loops: sentinel's utilization monitor,
+                swap.ts's XLM fee-floor trigger, and forecaster.ts's
+                Tier 0 sizing are real and live-verified, swap.ts submits
+                through a real vault (adr/0016), reporter not started
   sdk/          TypeScript SDK for agent operators: the signing module
                 (constructing and submitting a real multi-party vault
                 authorization) is real and live-verified (adr/0016), the
@@ -156,7 +156,13 @@ balance genuinely below the configured floor triggered a real signed
 swap authorized through a real vault's own `r_swap` context rule (not a
 plain funded identity, `adr/0016`), confirmed by real balance reads
 before and after, and a second run once above the floor correctly took
-no action (`adr/0015`, `adr/0016`).
+no action (`adr/0015`, `adr/0016`). `keeper/src/forecaster.ts`'s
+EWMA/hysteresis sizing model has 24 pure unit tests, and
+`forecasterLoop.ts` closes the real integration: real USDC transfer
+events out of the vault (a real fourth event topic this workspace found
+by reading actual emitted events, `adr/0017`) feed the model, and a real
+`risk-engine.set_tier0_target` write landed with `SUCCESS` status against
+a real deployed `risk-engine`.
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered

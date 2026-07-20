@@ -9,7 +9,9 @@
     "sentinel": "tsx src/sentinel.ts",
     "sentinel:once": "tsx src/sentinel.ts --once",
     "swap-sentinel": "tsx src/swap.ts",
-    "swap-sentinel:once": "tsx src/swap.ts --once"
+    "swap-sentinel:once": "tsx src/swap.ts --once",
+    "forecaster": "tsx src/forecasterLoop.ts",
+    "forecaster:once": "tsx src/forecasterLoop.ts --once"
   },
   "dependencies": {
     "@blend-capital/blend-sdk": "^3.3.0",

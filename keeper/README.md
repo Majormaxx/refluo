@@ -26,7 +26,21 @@ the vault before and after. See `adr/0015` for the swap mechanism,
 `adr/0016` for the vault-authorized submission (the SDK's real signing
 module, `sdk/src/smartAccountAuth.ts`).
 
-Forecaster and reporter are not started.
+The Forecaster's Tier 0 sizing half is also real and working
+(`src/forecaster.ts` for the pure EWMA/hysteresis model,
+`src/forecasterLoop.ts` for the real integration): reads real USDC
+transfer events out of the vault via the RPC, winsorizes and runs them
+through fast (6h) and slow (7d) burn-rate EWMAs, and writes a real
+`risk-engine.set_tier0_target` call when the proposed target diverges
+from the on-chain value by more than a configured band. Live-verified: a
+real deployed `risk-engine` received a real `set_tier0_target` write with
+`SUCCESS` status. See `adr/0017`, which also covers a real finding: the
+live USDC token's transfer event carries four topics, not the three a
+generic SEP-41 assumption expects. The recall-triggering half reuses
+`adr/0016`'s signing mechanism and is real code, not yet live-verified on
+its own (needs a real Blend position deployed first).
+
+The reporter loop is not started.
 
 ## Setup
 
@@ -39,6 +53,8 @@ npm run sentinel:once   # one real utilization-monitor tick against testnet
 npm run sentinel        # continuous utilization-monitor loop
 npm run swap-sentinel:once   # one real XLM fee-floor tick against testnet
 npm run swap-sentinel        # continuous XLM fee-floor loop
+npm run forecaster:once      # one real Tier 0 sizing tick against testnet
+npm run forecaster           # continuous Tier 0 sizing loop
 ```
 
 `keeper/packages/risk-engine-client`, `oracle-router-client`,

@@ -3,3 +3,4 @@ dist/
 .env
 packages/*/node_modules/
 packages/*/dist/
+.forecaster-state.json
