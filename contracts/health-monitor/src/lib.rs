@@ -12,11 +12,26 @@
 //! return false would make that transition untestable in spirit, even
 //! though the code compiles. `extend`/`tick_recovery`/`check_and_trip`
 //! remain genuinely unbuilt, stated as such, not faked.
+//!
+//! Guardian membership and the admin record are OZ's real, audited
+//! `stellar-access` `AccessControl` primitive (adr/0020), not a
+//! hand-rolled `Vec<Address>`: real per-account grant/revoke instead of
+//! only ever replacing the whole roster, real events on every change,
+//! real admin storage this contract no longer duplicates. The pause
+//! state machine itself (auto-expiry, extension cap, trigger reasoning)
+//! stays bespoke on purpose: OZ's own `Pausable` module is an
+//! unauthenticated boolean flag with no such semantics, and its
+//! `Paused`/`Resumed` event shape would have broken the reporter loop's
+//! already-live-verified decoder (adr/0019) for no real gain.
 
 use refluo_common::CommonError;
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, panic_with_error, Address, Env, Vec,
+    contract, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, Symbol, Vec,
 };
+use stellar_access::access_control as ac;
+
+const GUARDIAN_ROLE: Symbol = symbol_short!("guardian");
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,9 +53,7 @@ pub struct PauseState {
 
 #[contracttype]
 pub enum DataKey {
-    Admin,
     Pause,
-    Guardians,
 }
 
 const MAX_PAUSE_DURATION: u64 = 72 * 3600;
@@ -69,15 +82,34 @@ pub struct HealthMonitor;
 impl HealthMonitor {
     pub fn init_guardians(e: Env, admin: Address, guardians: Vec<Address>) {
         admin.require_auth();
-        e.storage().instance().set(&DataKey::Admin, &admin);
-        e.storage().instance().set(&DataKey::Guardians, &guardians);
+        ac::set_admin(&e, &admin);
+        for guardian in guardians.iter() {
+            // grant_role_no_auth, not grant_role: this is the one-time
+            // constructor-equivalent path (docs: "During contract
+            // initialization/construction"), the real per-call
+            // admin-authorized path is add_guardian/remove_guardian below.
+            ac::grant_role_no_auth(&e, &guardian, &GUARDIAN_ROLE, &admin);
+        }
     }
 
-    pub fn guardians(e: Env) -> Result<Vec<Address>, CommonError> {
-        e.storage()
-            .instance()
-            .get(&DataKey::Guardians)
-            .ok_or(CommonError::NotInitialized)
+    /// Adds one guardian without disturbing the rest of the roster, a
+    /// real capability the old hand-rolled `Vec<Address>` never had (it
+    /// could only ever be replaced wholesale via `init_guardians`).
+    pub fn add_guardian(e: Env, admin: Address, guardian: Address) {
+        ac::grant_role(&e, &guardian, &GUARDIAN_ROLE, &admin);
+    }
+
+    pub fn remove_guardian(e: Env, admin: Address, guardian: Address) {
+        ac::revoke_role(&e, &guardian, &GUARDIAN_ROLE, &admin);
+    }
+
+    pub fn guardians(e: Env) -> Vec<Address> {
+        let count = ac::get_role_member_count(&e, &GUARDIAN_ROLE);
+        let mut out = Vec::new(&e);
+        for i in 0..count {
+            out.push_back(ac::get_role_member(&e, &GUARDIAN_ROLE, i));
+        }
+        out
     }
 
     /// status() computes paused && now < pause_expiry lazily — no keeper
@@ -96,12 +128,7 @@ impl HealthMonitor {
     pub fn pause(e: Env, guardian: Address) {
         guardian.require_auth();
 
-        let guardians: Vec<Address> = e
-            .storage()
-            .instance()
-            .get(&DataKey::Guardians)
-            .unwrap_or_else(|| panic_with_error!(e, CommonError::NotInitialized));
-        if !guardians.contains(&guardian) {
+        if ac::has_role(&e, &guardian, &GUARDIAN_ROLE).is_none() {
             panic_with_error!(e, CommonError::Unauthorized);
         }
 
@@ -128,11 +155,8 @@ impl HealthMonitor {
     pub fn resume_early(e: Env, admin: Address) {
         admin.require_auth();
 
-        let stored_admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, CommonError::NotInitialized));
+        let stored_admin =
+            ac::get_admin(&e).unwrap_or_else(|| panic_with_error!(e, CommonError::NotInitialized));
         if admin != stored_admin {
             panic_with_error!(e, CommonError::Unauthorized);
         }
@@ -260,6 +284,67 @@ mod test {
 
         client.resume_early(&admin);
         assert!(!client.status());
+    }
+
+    #[test]
+    fn admin_can_add_a_guardian_without_disturbing_the_existing_roster() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let g1 = Address::generate(&e);
+        let g2 = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [g1.clone()]));
+
+        client.add_guardian(&admin, &g2);
+
+        assert!(client.guardians().contains(&g1));
+        assert!(client.guardians().contains(&g2));
+        client.pause(&g2);
+        assert!(client.status());
+    }
+
+    #[test]
+    fn admin_can_remove_a_guardian_who_then_cannot_pause() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let guardian = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [guardian.clone()]));
+
+        client.remove_guardian(&admin, &guardian);
+
+        assert!(!client.guardians().contains(&guardian));
+        let result = client.try_pause(&guardian);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn non_admin_cannot_add_a_guardian() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let outsider = Address::generate(&e);
+        let new_guardian = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, []));
+
+        // mock_all_auths() means this call's own require_auth() always
+        // passes; what's under test is access_control's own
+        // ensure_if_admin_or_admin_role check rejecting a non-admin
+        // caller regardless of whose signature was attached.
+        let result = client.try_add_guardian(&outsider, &new_guardian);
+        assert!(result.is_err());
     }
 
     #[test]

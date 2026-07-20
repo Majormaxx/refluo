@@ -30,6 +30,7 @@ publish = false
 # cuts a new release — see adr/0004.
 soroban-sdk = { version = "26.1.0", features = ["experimental_spec_shaking_v2"] }
 stellar-accounts = "=0.7.2"
+stellar-access = "=0.7.2"
 refluo-common = { path = "contracts/common" }
 proptest = "1"
 

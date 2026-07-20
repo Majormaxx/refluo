@@ -59,7 +59,7 @@ Ten on-chain contracts plus one off-chain keeper:
 | `policy-session` | SessionScope: agent hot-key expiry, caps, destination allowlist |
 | `policy-swap` | SwapExecutor: capped USDC->XLM top-up via Soroswap, oracle-derived slippage floor |
 | `oracle-router` | Dual-feed price reads with staleness gating and rate-of-change clamping |
-| `health-monitor` | Gate-seal circuit breaker: guardian-triggered pause, 72h auto-expiry, admin-gated early resume |
+| `health-monitor` | Gate-seal circuit breaker: guardian-triggered pause, 72h auto-expiry, admin-gated early resume; guardian roster on OZ's real `stellar-access` `AccessControl` (`adr/0020`) |
 | `timelock` | `propose -> 24h delay -> execute` for risk-increasing admin actions |
 | `risk-engine` | On-chain bounds-checker: reads real oracle status, pause status, and USDC balance; no deployment above NORMAL |
 
@@ -194,9 +194,11 @@ it (`adr/0019`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered
-HealthMonitor, not merely reporting the status (`adr/0010`), RiskEngine
-blocks deployment, and the system recovers on its own once the feed
-does. `drills/xlm_swap_sandwich_drill.sh` runs a real sandwich attack
+HealthMonitor (a contract address, not just an EOA, correctly passing the
+real `AccessControl` guardian check, `adr/0020`), not merely reporting
+the status (`adr/0010`), RiskEngine blocks deployment, and the system
+recovers on its own once the feed does. `drills/xlm_swap_sandwich_drill.sh`
+runs a real sandwich attack
 against the real Soroswap pool: a real attacker front-run measurably
 shifts the real pool's price, the victim's original zero-tolerance quote
 then reverts for real against the real router, and a
