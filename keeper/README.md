@@ -60,7 +60,19 @@ live RedStone price and really paused a real freshly deployed
 `HealthMonitor`, confirmed by a real `status()` read before and after.
 See `adr/0018` for the disclosed gap and every other real finding.
 
-The reporter loop is not started.
+The reporter loop is also real and working (`src/reporter.ts` for the
+pure metric computation, `src/reporterLoop.ts` for the real integration):
+Tier 0 hit rate and recall latency come from a real local metrics log
+`forecasterLoop.ts` now writes to on every tick and every real recall,
+pause count/duration comes straight from `health-monitor`'s own real
+emitted events (its exact topic/value shape confirmed live, not assumed
+from source), and Forecaster error backtests the sizing model against
+real chain history it never got to see in advance. Live-verified: a real
+paused/resumed `HealthMonitor` cycle was correctly reconstructed from
+chain alone, and seeded real metric-log events came back through a real
+`tick()` with exactly the expected hit rate and latency (`adr/0019`). No
+dashboard exists yet to display it (separately tracked); `tick()` writes
+the real computed snapshot to a local JSON file in the meantime.
 
 ## Setup
 
@@ -79,6 +91,10 @@ npm run reflector-webhook    # real webhook server (needs HEALTH_MONITOR_ID,
                               # REFLECTOR_TRUSTED_VERIFIERS)
 npx tsx scripts/reflector_webhook_smoke_test.mjs   # real end-to-end webhook
                                                     # + quorum + pause drill
+npm run reporter:once        # one real SLA telemetry tick against testnet
+npm run reporter             # continuous reporter loop
+npx tsx scripts/reporter_smoke_test.mjs   # real pause/resume + metrics-log
+                                           # + backtest drill
 ```
 
 `keeper/packages/risk-engine-client`, `oracle-router-client`,

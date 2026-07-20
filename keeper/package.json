@@ -12,7 +12,9 @@
     "swap-sentinel:once": "tsx src/swap.ts --once",
     "forecaster": "tsx src/forecasterLoop.ts",
     "forecaster:once": "tsx src/forecasterLoop.ts --once",
-    "reflector-webhook": "tsx src/reflectorWebhookServer.ts"
+    "reflector-webhook": "tsx src/reflectorWebhookServer.ts",
+    "reporter": "tsx src/reporterLoop.ts",
+    "reporter:once": "tsx src/reporterLoop.ts --once"
   },
   "dependencies": {
     "@blend-capital/blend-sdk": "^3.3.0",

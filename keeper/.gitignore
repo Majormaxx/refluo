@@ -4,3 +4,6 @@ dist/
 packages/*/node_modules/
 packages/*/dist/
 .forecaster-state.json
+.keeper-metrics.jsonl
+.reporter-snapshot.json
+.reporter-smoke-*

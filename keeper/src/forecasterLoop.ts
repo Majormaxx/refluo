@@ -43,6 +43,7 @@ import {
   shouldWriteOnChain,
   shouldRecall,
 } from "./forecaster.js";
+import { appendMetricEvent } from "./metricsLog.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -70,6 +71,7 @@ const RECALL_CONTEXT_RULE_ID = process.env.RECALL_CONTEXT_RULE_ID
   ? Number(process.env.RECALL_CONTEXT_RULE_ID)
   : null;
 const RECALL_VENUE_ID = process.env.RECALL_VENUE_ID ?? null;
+const METRICS_LOG_FILE = process.env.KEEPER_METRICS_LOG_FILE ?? ".keeper-metrics.jsonl";
 
 const SECONDS_PER_LEDGER_APPROX = 5;
 
@@ -112,7 +114,7 @@ function saveHysteresisState(state: HysteresisState): void {
  * events where the vault is the sender, over the retained ledger range,
  * and aggregates them into hourly buckets. Returns buckets sorted oldest
  * first, one entry per hour that had at least one real transfer. */
-async function fetchHourlyBurnObservations(): Promise<BurnObservation[]> {
+export async function fetchHourlyBurnObservations(): Promise<BurnObservation[]> {
   const latestLedger = await server.getLatestLedger();
   const lookbackLedgers = Math.ceil(
     (LOOKBACK_HOURS * 3600) / SECONDS_PER_LEDGER_APPROX,
@@ -180,6 +182,7 @@ async function fetchHourlyBurnObservations(): Promise<BurnObservation[]> {
 }
 
 export async function tick(): Promise<void> {
+  const tickStartSeconds = Math.floor(Date.now() / 1000);
   const observations = await fetchHourlyBurnObservations();
   log(`fetched ${observations.length} real hourly burn buckets from chain history`);
 
@@ -249,6 +252,17 @@ export async function tick(): Promise<void> {
     const tier0Balance = raw ? scValToI128(raw) : 0n;
     log(`real vault USDC balance: ${tier0Balance}`);
 
+    // reporterLoop.ts's real Tier 0 hit-rate metric reads these samples
+    // back: this tick's own real balance/target observation is more
+    // frequent and no less real than a separate reporter-owned sample
+    // would be, so reporter doesn't duplicate this query itself.
+    appendMetricEvent(METRICS_LOG_FILE, {
+      type: "tier0_sample",
+      timestampSeconds: tickStartSeconds,
+      balanceStroops: tier0Balance.toString(),
+      targetStroops: decision.appliedTarget.toString(),
+    });
+
     if (shouldRecall(tier0Balance, decision.appliedTarget, REFILL_BAND_BPS)) {
       if (RECALL_CONTEXT_RULE_ID === null || !RECALL_VENUE_ID) {
         log(
@@ -256,7 +270,7 @@ export async function tick(): Promise<void> {
             "are not configured, skipping the real recall this tick",
         );
       } else {
-        await triggerRecall(decision.appliedTarget - tier0Balance);
+        await triggerRecall(decision.appliedTarget - tier0Balance, tickStartSeconds);
       }
     }
   }
@@ -274,7 +288,7 @@ function scValToI128(val: xdr.ScVal): bigint {
  * current balance, capped by whatever policy-recall's own real rate
  * limits allow (a rejected over-limit call fails closed, it does not
  * retry smaller). */
-async function triggerRecall(shortfall: bigint): Promise<void> {
+async function triggerRecall(shortfall: bigint, detectedAtSeconds: number): Promise<void> {
   if (!RECALL_VENUE_ID || RECALL_CONTEXT_RULE_ID === null) {
     return;
   }
@@ -314,6 +328,14 @@ async function triggerRecall(shortfall: bigint): Promise<void> {
     sourceKeypair: keeperKeypair,
   });
   log(`recall submitted through the vault, status=${result.status}`);
+  appendMetricEvent(METRICS_LOG_FILE, {
+    type: "recall_triggered",
+    timestampSeconds: detectedAtSeconds,
+    detectedAtSeconds,
+    executedAtSeconds: Math.floor(Date.now() / 1000),
+    shortfallStroops: shortfall.toString(),
+    status: result.status,
+  });
 }
 
 async function main(): Promise<void> {

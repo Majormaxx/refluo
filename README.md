@@ -67,9 +67,10 @@ An off-chain keeper (`keeper/`) makes the decisions (burn forecasting,
 oracle cross-checks, rebalance scheduling) that contracts only ever check
 against a bound. This split keeps the audited on-chain surface small.
 Its utilization monitor, XLM fee-floor swap trigger, Tier 0 sizing
-(Forecaster), and Reflector Subscriptions webhook (quorum-checked
-guardian pause on confirmed price divergence) are real and live-verified
-(see Testing); the reporter loop the PRD also names is not started.
+(Forecaster), Reflector Subscriptions webhook (quorum-checked guardian
+pause on confirmed price divergence), and reporter loop (real SLA
+telemetry) are real and live-verified (see Testing). No dashboard exists
+yet to display that telemetry (separately tracked).
 
 ## Project structure
 
@@ -82,10 +83,10 @@ refluo/
   adr/          architecture decision records
   keeper/       off-chain loops: sentinel's utilization monitor,
                 swap.ts's XLM fee-floor trigger, forecaster.ts's Tier 0
-                sizing, and the Reflector Subscriptions webhook
-                (quorum + RedStone cross-check + guardian pause) are real
-                and live-verified, swap.ts submits through a real vault
-                (adr/0016), reporter not started
+                sizing, the Reflector Subscriptions webhook
+                (quorum + RedStone cross-check + guardian pause), and
+                reporter.ts's SLA telemetry are real and live-verified,
+                swap.ts submits through a real vault (adr/0016)
   sdk/          TypeScript SDK for agent operators: the signing module
                 (constructing and submitting a real multi-party vault
                 authorization) is real and live-verified (adr/0016), the
@@ -180,6 +181,16 @@ real `status()` read before and after (`adr/0018`, which also discloses
 the one real infrastructure gap: no discoverable testnet deployment of
 Reflector's own Subscriptions contract, so an actual Reflector-node-
 originated POST couldn't be exercised in this pass).
+`keeper/src/reporter.ts` and `reporterLoop.ts` have their own unit tests
+plus `scripts/reporter_smoke_test.mjs`: a real `health-monitor` is really
+paused and really resumed roughly 20 seconds apart, and a real `tick()`
+correctly reconstructs that pause's real duration from chain events
+alone (their exact topic/value shape confirmed live, not assumed from
+source); real `tier0_sample`/`recall_triggered` metric-log events, seeded
+through the same function production code calls, come back with exactly
+the expected hit rate and latency; and the Forecaster-error backtest runs
+against real (if young) burn history without needing to fabricate any of
+it (`adr/0019`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered
