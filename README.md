@@ -66,9 +66,10 @@ Ten on-chain contracts plus one off-chain keeper:
 An off-chain keeper (`keeper/`) makes the decisions (burn forecasting,
 oracle cross-checks, rebalance scheduling) that contracts only ever check
 against a bound. This split keeps the audited on-chain surface small.
-Its utilization monitor, XLM fee-floor swap trigger, and Tier 0 sizing
-(Forecaster) are real and live-verified (see Testing); the reporter loop
-the PRD also names is not started.
+Its utilization monitor, XLM fee-floor swap trigger, Tier 0 sizing
+(Forecaster), and Reflector Subscriptions webhook (quorum-checked
+guardian pause on confirmed price divergence) are real and live-verified
+(see Testing); the reporter loop the PRD also names is not started.
 
 ## Project structure
 
@@ -80,9 +81,11 @@ refluo/
                 (cross-contract, dev-only)
   adr/          architecture decision records
   keeper/       off-chain loops: sentinel's utilization monitor,
-                swap.ts's XLM fee-floor trigger, and forecaster.ts's
-                Tier 0 sizing are real and live-verified, swap.ts submits
-                through a real vault (adr/0016), reporter not started
+                swap.ts's XLM fee-floor trigger, forecaster.ts's Tier 0
+                sizing, and the Reflector Subscriptions webhook
+                (quorum + RedStone cross-check + guardian pause) are real
+                and live-verified, swap.ts submits through a real vault
+                (adr/0016), reporter not started
   sdk/          TypeScript SDK for agent operators: the signing module
                 (constructing and submitting a real multi-party vault
                 authorization) is real and live-verified (adr/0016), the
@@ -163,6 +166,20 @@ events out of the vault (a real fourth event topic this workspace found
 by reading actual emitted events, `adr/0017`) feed the model, and a real
 `risk-engine.set_tier0_target` write landed with `SUCCESS` status against
 a real deployed `risk-engine`.
+`keeper/src/reflectorSubscription.ts` and `reflectorQuorum.ts` have 20
+pure unit tests (real Ed25519 sign/verify round-trips against a locally
+generated keypair, exercising the exact real signing scheme
+reflector-node's own source uses, plus quorum accumulation, rejection,
+and pruning logic), and `scripts/reflector_webhook_smoke_test.mjs` closes
+the real integration: a real deployed `health-monitor` with this keeper's
+key as its real registered guardian, a real HTTP server, two throwaway
+keys standing in for real Reflector node signatures, an untrusted third
+key correctly rejected, a real live RedStone REST fetch, and a real
+`HealthMonitor.pause()` transaction landing with `SUCCESS`, confirmed by a
+real `status()` read before and after (`adr/0018`, which also discloses
+the one real infrastructure gap: no discoverable testnet deployment of
+Reflector's own Subscriptions contract, so an actual Reflector-node-
+originated POST couldn't be exercised in this pass).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered

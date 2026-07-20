@@ -40,6 +40,26 @@ generic SEP-41 assumption expects. The recall-triggering half reuses
 `adr/0016`'s signing mechanism and is real code, not yet live-verified on
 its own (needs a real Blend position deployed first).
 
+The Reflector Subscriptions webhook pipeline is also real and working
+(`src/reflectorSubscription.ts` for signature verification and RedStone
+cross-checking, `src/reflectorQuorum.ts` for trust accumulation across
+distinct verifier keys, `src/reflectorWebhookServer.ts` for the real HTTP
+receiver, `src/reflectorSubscriptionManager.ts` for real on-chain
+subscription create/deposit/cancel via `@reflector/subscription-client`):
+a real quorum of distinct trusted Reflector verifier signatures, each
+checked against the real signing scheme reflector-node's own source uses,
+is required before a pushed price is cross-checked against a real
+RedStone REST quote, and a confirmed divergence pauses a real deployed
+`health-monitor` through its own guardian primitive. Live-verified
+end to end except the notification's real origin: no real testnet
+deployment of Reflector's own Subscriptions contract was discoverable, so
+`scripts/reflector_webhook_smoke_test.mjs` POSTs real-crypto,
+correctly-shaped synthetic notifications (two throwaway keys standing in
+for real node keys) at the real running server, which really fetched a
+live RedStone price and really paused a real freshly deployed
+`HealthMonitor`, confirmed by a real `status()` read before and after.
+See `adr/0018` for the disclosed gap and every other real finding.
+
 The reporter loop is not started.
 
 ## Setup
@@ -55,6 +75,10 @@ npm run swap-sentinel:once   # one real XLM fee-floor tick against testnet
 npm run swap-sentinel        # continuous XLM fee-floor loop
 npm run forecaster:once      # one real Tier 0 sizing tick against testnet
 npm run forecaster           # continuous Tier 0 sizing loop
+npm run reflector-webhook    # real webhook server (needs HEALTH_MONITOR_ID,
+                              # REFLECTOR_TRUSTED_VERIFIERS)
+npx tsx scripts/reflector_webhook_smoke_test.mjs   # real end-to-end webhook
+                                                    # + quorum + pause drill
 ```
 
 `keeper/packages/risk-engine-client`, `oracle-router-client`,
