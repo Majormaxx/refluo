@@ -4,6 +4,10 @@ refluo-implementation-spec.md
 refluo-remediation-roadmap.md
 refluo-prd-unified.md
 
+# npm workspaces: one root node_modules, hoisted for every JS/TS package
+# (sdk/, keeper/, keeper/packages/*, drills/).
+node_modules/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

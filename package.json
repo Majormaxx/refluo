@@ -1,0 +1,11 @@
+{
+  "name": "refluo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "sdk",
+    "keeper",
+    "keeper/packages/*",
+    "drills"
+  ]
+}

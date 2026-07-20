@@ -61,6 +61,17 @@ trait OracleRouterInterface {
     fn get_price(e: Env, asset: Asset) -> MirroredPriceQuote;
 }
 
+/// Mirrors Soroswap's real router `router_pair_for`, confirmed live via
+/// `stellar contract info interface` against the deployed testnet router.
+/// Used to verify the router's own internal token transfer (see
+/// `enforce`'s second match arm) really targets Soroswap's own registered
+/// pair for this exact token pair, not an address an attacker chose.
+#[allow(dead_code)]
+#[contractclient(name = "SoroswapRouterClient")]
+trait SoroswapRouterInterface {
+    fn router_pair_for(e: Env, token_a: Address, token_b: Address) -> Address;
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SwapConfig {
@@ -104,6 +115,13 @@ pub enum DataKey {
     Config(Address, u32),
     EpochSpend(Address, u32, u64),
     LastWriteEpoch(Address, u32),
+    /// Soroswap's own real registered pair for (token_in, token_out),
+    /// resolved once at install time (adr/0016). Read-only cache: cannot
+    /// be re-resolved live inside `enforce`, the host's own reentrancy
+    /// guard forbids calling back into `router` from a call already
+    /// executing inside it (the router's internal token transfer is
+    /// exactly such a call).
+    Pair(Address, u32),
 }
 
 #[contracterror]
@@ -175,6 +193,18 @@ impl Policy for PolicySwap {
         if e.storage().persistent().has(&key) {
             panic_with_error!(e, SwapError::AlreadyInstalled);
         }
+
+        // Resolved once, here, not trusted from the caller and never
+        // re-resolved live inside enforce: the host's reentrancy guard
+        // forbids calling back into `router` from inside a call already
+        // executing there (adr/0016).
+        let pair =
+            SoroswapRouterClient::new(e, &c.router).router_pair_for(&c.token_in, &c.token_out);
+        e.storage().persistent().set(
+            &DataKey::Pair(smart_account.clone(), context_rule.id),
+            &pair,
+        );
+
         e.storage().persistent().set(&key, &install_params);
     }
 
@@ -198,17 +228,21 @@ impl Policy for PolicySwap {
             .unwrap_or_else(|| panic_with_error!(e, SwapError::NotInitialized));
 
         match context {
+            // The real Soroswap router's `swap_exact_tokens_for_tokens`
+            // requires the vault's own authorization twice within one
+            // transaction: once for the router call itself, once again
+            // for its internal `token_in.transfer(vault, pair, amount)`
+            // sub-call, confirmed live (adr/0016). Soroban batches both
+            // into this same context_rule, calling `enforce` once per
+            // context, so both arms below are real, expected traffic for
+            // a single genuine swap, not two independent authorizations.
             Context::Contract(ContractContext {
                 contract,
                 fn_name,
                 args,
-            }) => {
-                if contract != cfg.router {
-                    panic_with_error!(e, SwapError::Unauthorized);
-                }
-                if fn_name != Symbol::new(e, "swap_exact_tokens_for_tokens") {
-                    panic_with_error!(e, SwapError::Unauthorized);
-                }
+            }) if contract == cfg.router
+                && fn_name == Symbol::new(e, "swap_exact_tokens_for_tokens") =>
+            {
                 let (amount_in, amount_out_min) =
                     enforce_swap_exact_tokens(e, &cfg, &args, &smart_account);
 
@@ -220,6 +254,13 @@ impl Policy for PolicySwap {
                     amount_out_min,
                 }
                 .publish(e);
+            }
+            Context::Contract(ContractContext {
+                contract,
+                fn_name,
+                args,
+            }) if contract == cfg.token_in && fn_name == Symbol::new(e, "transfer") => {
+                enforce_token_in_transfer(e, &cfg, &args, &smart_account, context_rule.id);
             }
             _ => panic_with_error!(e, SwapError::Unauthorized),
         }
@@ -233,6 +274,9 @@ impl Policy for PolicySwap {
             panic_with_error!(e, SwapError::NotInitialized);
         }
         e.storage().persistent().remove(&key);
+        e.storage()
+            .persistent()
+            .remove(&DataKey::Pair(smart_account.clone(), context_rule.id));
         e.storage()
             .persistent()
             .remove(&DataKey::LastWriteEpoch(smart_account, context_rule.id));
@@ -313,6 +357,54 @@ fn enforce_swap_exact_tokens(
     }
 
     (amount_in, amount_out_min)
+}
+
+/// SEP-41 `transfer(from, to, amount)`, the router's own internal pull of
+/// `token_in` from the vault. This never bumps epoch spend or publishes
+/// `SwapAuthorized` again, the paired primary context already did that
+/// for the same real transaction. What this arm has to prevent: an
+/// attacker submitting *only* this context, with no accompanying
+/// `swap_exact_tokens_for_tokens` context, to smuggle an arbitrary-
+/// destination transfer of the vault's `token_in` past this policy.
+/// `to` is checked against the real pair address `install()` resolved and
+/// cached (adr/0016): a live `router_pair_for` call here would re-enter
+/// `router`, which the host forbids since this call is already executing
+/// inside it.
+fn enforce_token_in_transfer(
+    e: &Env,
+    cfg: &SwapConfig,
+    args: &Vec<Val>,
+    smart_account: &Address,
+    rule_id: u32,
+) {
+    let from = args
+        .get(0)
+        .and_then(|v| Address::try_from_val(e, &v).ok())
+        .unwrap_or_else(|| panic_with_error!(e, SwapError::Unauthorized));
+    let to = args
+        .get(1)
+        .and_then(|v| Address::try_from_val(e, &v).ok())
+        .unwrap_or_else(|| panic_with_error!(e, SwapError::Unauthorized));
+    let amount = args
+        .get(2)
+        .and_then(|v| i128::try_from_val(e, &v).ok())
+        .unwrap_or_else(|| panic_with_error!(e, SwapError::Unauthorized));
+
+    if &from != smart_account {
+        panic_with_error!(e, SwapError::Unauthorized);
+    }
+    if amount <= 0 || amount > cfg.per_call_cap {
+        panic_with_error!(e, SwapError::CapExceeded);
+    }
+
+    let real_pair: Address = e
+        .storage()
+        .persistent()
+        .get(&DataKey::Pair(smart_account.clone(), rule_id))
+        .unwrap_or_else(|| panic_with_error!(e, SwapError::NotInitialized));
+    if to != real_pair {
+        panic_with_error!(e, SwapError::Unauthorized);
+    }
 }
 
 /// Real cross-contract read of OracleRouter's live price, never a value
@@ -452,6 +544,31 @@ mod test {
         }
     }
 
+    #[contract]
+    struct MockSoroswapRouter;
+
+    #[contracttype]
+    pub enum MockRouterKey {
+        Pair,
+    }
+
+    #[contractimpl]
+    impl MockSoroswapRouter {
+        pub fn set_pair_for(e: Env, pair: Address) {
+            e.storage().persistent().set(&MockRouterKey::Pair, &pair);
+        }
+    }
+
+    #[contractimpl]
+    impl SoroswapRouterInterface for MockSoroswapRouter {
+        fn router_pair_for(e: Env, _token_a: Address, _token_b: Address) -> Address {
+            e.storage()
+                .persistent()
+                .get(&MockRouterKey::Pair)
+                .unwrap_or_else(|| panic_with_error!(e, SwapError::NotInitialized))
+        }
+    }
+
     fn advance_to_realistic_ledger(e: &Env) {
         e.ledger().with_mut(|l| {
             l.timestamp = 2_000_000_000;
@@ -466,6 +583,11 @@ mod test {
         token_in: Address,
         token_out: Address,
         oracle: MockOracleRouterClient<'a>,
+        /// The mock router's default resolvable pair, set during setup()
+        /// since install() now resolves it live (adr/0016): every install
+        /// needs a real answer, not just the tests that exercise the
+        /// transfer-context path directly.
+        pair: Address,
     }
 
     // XLM at exactly $0.10, 14 decimals, matching OracleRouter's real
@@ -485,12 +607,18 @@ mod test {
         let contract_id = e.register(PolicySwap, ());
         let client = PolicySwapClient::new(e, &contract_id);
         let smart_account = Address::generate(e);
-        let router = Address::generate(e);
+        // A real registered contract, not a bare generated address: the
+        // transfer-context arm of enforce() makes a real cross-contract
+        // call to router_pair_for, so tests exercising that path need a
+        // real callable mock, same reasoning as MockOracleRouter above.
+        let router = e.register(MockSoroswapRouter, ());
         let token_in = Address::generate(e);
         let token_out = Address::generate(e);
         let oracle_id = e.register(MockOracleRouter, ());
         let oracle = MockOracleRouterClient::new(e, &oracle_id);
         oracle.set_quote(&healthy_quote(e, 10_000_000_000_000)); // $0.10 * 1e14
+        let pair = Address::generate(e);
+        MockSoroswapRouterClient::new(e, &router).set_pair_for(&pair);
         Fixture {
             client,
             smart_account,
@@ -498,6 +626,7 @@ mod test {
             token_in,
             token_out,
             oracle,
+            pair,
         }
     }
 
@@ -563,6 +692,24 @@ mod test {
         Context::Contract(ContractContext {
             contract: router.clone(),
             fn_name: Symbol::new(e, "swap_exact_tokens_for_tokens"),
+            args,
+        })
+    }
+
+    fn transfer_context(
+        e: &Env,
+        token_in: &Address,
+        from: &Address,
+        to: &Address,
+        amount: i128,
+    ) -> Context {
+        let mut args = Vec::new(e);
+        args.push_back(from.into_val(e));
+        args.push_back(to.into_val(e));
+        args.push_back(amount.into_val(e));
+        Context::Contract(ContractContext {
+            contract: token_in.clone(),
+            fn_name: Symbol::new(e, "transfer"),
             args,
         })
     }
@@ -991,6 +1138,138 @@ mod test {
             .client
             .try_enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
         assert!(result.is_err());
+    }
+
+    // ################## router's internal token_in transfer context ##################
+    // Confirmed live (adr/0016): Soroswap's real router requires the
+    // vault's own authorization twice within one transaction, once for
+    // swap_exact_tokens_for_tokens itself, once again for its internal
+    // token_in.transfer(vault, pair, amount) sub-call. These tests cover
+    // that second context in isolation, the shape a compromised keeper
+    // would submit alone if it could, with no paired swap context at all.
+
+    #[test]
+    fn enforce_allows_token_in_transfer_to_the_real_registered_pair() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let f = setup(&e);
+        let c = cfg(&e, &f, AMOUNT_IN_100_USDC, AMOUNT_IN_100_USDC * 10, 9_700);
+        f.client.install(&c, &rule(&e, 1), &f.smart_account);
+
+        let ctx = transfer_context(
+            &e,
+            &f.token_in,
+            &f.smart_account,
+            &f.pair,
+            AMOUNT_IN_100_USDC,
+        );
+        f.client
+            .enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
+    }
+
+    #[test]
+    fn enforce_rejects_token_in_transfer_to_anywhere_but_the_real_pair() {
+        // The core security property this arm exists for: an attacker
+        // submitting only this context, no paired swap context, must
+        // never be able to redirect token_in anywhere but the real pair
+        // install() resolved and cached (f.pair).
+        let e = Env::default();
+        e.mock_all_auths();
+        let f = setup(&e);
+        let c = cfg(&e, &f, AMOUNT_IN_100_USDC, AMOUNT_IN_100_USDC * 10, 9_700);
+        f.client.install(&c, &rule(&e, 1), &f.smart_account);
+
+        let attacker_destination = Address::generate(&e);
+        let ctx = transfer_context(
+            &e,
+            &f.token_in,
+            &f.smart_account,
+            &attacker_destination,
+            AMOUNT_IN_100_USDC,
+        );
+        let result = f
+            .client
+            .try_enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enforce_rejects_token_in_transfer_not_from_the_vault() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let f = setup(&e);
+        let c = cfg(&e, &f, AMOUNT_IN_100_USDC, AMOUNT_IN_100_USDC * 10, 9_700);
+        f.client.install(&c, &rule(&e, 1), &f.smart_account);
+
+        let not_vault = Address::generate(&e);
+        let ctx = transfer_context(&e, &f.token_in, &not_vault, &f.pair, AMOUNT_IN_100_USDC);
+        let result = f
+            .client
+            .try_enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enforce_rejects_token_in_transfer_over_per_call_cap() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let f = setup(&e);
+        let c = cfg(&e, &f, AMOUNT_IN_100_USDC, AMOUNT_IN_100_USDC * 10, 9_700);
+        f.client.install(&c, &rule(&e, 1), &f.smart_account);
+
+        let ctx = transfer_context(
+            &e,
+            &f.token_in,
+            &f.smart_account,
+            &f.pair,
+            AMOUNT_IN_100_USDC + 1,
+        );
+        let result = f
+            .client
+            .try_enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enforce_token_in_transfer_never_bumps_epoch_spend() {
+        // The primary swap_exact_tokens_for_tokens context is what tracks
+        // epoch spend; this arm must not double-count when both contexts
+        // land for the same real swap.
+        let e = Env::default();
+        e.mock_all_auths();
+        let f = setup(&e);
+        let c = cfg(&e, &f, AMOUNT_IN_100_USDC, AMOUNT_IN_100_USDC, 9_700);
+        f.client.install(&c, &rule(&e, 1), &f.smart_account);
+
+        for _ in 0..3 {
+            let ctx = transfer_context(
+                &e,
+                &f.token_in,
+                &f.smart_account,
+                &f.pair,
+                AMOUNT_IN_100_USDC,
+            );
+            f.client
+                .enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
+        }
+
+        // If this arm bumped epoch spend, the epoch_cap (== per_call_cap,
+        // one swap's worth) would already be exhausted after the first
+        // call; a real primary-context swap must still succeed.
+        let min_out = EXPECTED_OUT_AT_10C * 97 / 100;
+        let now = e.ledger().timestamp();
+        let ctx = swap_context(
+            &e,
+            &f.router,
+            &f.token_in,
+            &f.token_out,
+            AMOUNT_IN_100_USDC,
+            min_out,
+            &f.smart_account,
+            now + 60,
+        );
+        f.client
+            .enforce(&ctx, &signers(&e), &rule(&e, 1), &f.smart_account);
     }
 
     // ################## PROPERTY TESTS ##################

@@ -81,11 +81,18 @@ refluo/
   adr/          architecture decision records
   keeper/       off-chain loops: sentinel's utilization monitor and
                 swap.ts's XLM fee-floor trigger are real and
-                live-verified, Forecaster/reporter not started
-  sdk/          TypeScript SDK for agent operators (not started)
+                live-verified, swap.ts now submits through a real vault
+                (adr/0016), Forecaster/reporter not started
+  sdk/          TypeScript SDK for agent operators: the signing module
+                (constructing and submitting a real multi-party vault
+                authorization) is real and live-verified (adr/0016), the
+                rest of the management-plane API is not started
   dashboard/    operator-facing web app (not started)
   drills/       scripted adversarial scenarios, some live (see Testing)
 ```
+
+`sdk/`, `keeper/`, and `drills/` are npm workspaces sharing one root
+`node_modules` (root `package.json`), not three separate installs.
 
 ## Quickstart
 
@@ -113,9 +120,13 @@ every policy from a vault with zero keeper or dashboard involvement.
 `vault` and `policy-admin-threshold` were deployed live for the first
 time, and the real 2-of-3 admin bootstrap was confirmed against that real
 deployment, going beyond what an in-process simulation alone could show.
-The multi-signer submission itself needs the SDK's signing module, plain
-`stellar-cli` can't construct the nested authorization entries a real
-multisig call needs, see `adr/0008`.
+The multi-signer submission itself is now real too: `sdk/src/smartAccountAuth.ts`
+constructs the nested authorization entries plain `stellar-cli` can't
+(`adr/0008`'s gap), live-verified with a real 2-of-3 call, a real 1-of-3
+rejection, a real 3-of-3 call, and the full self-rescue drill
+(`drills/refluo_disappears_drill.mjs`): a real 2-of-3 call installs a
+real policy, a second real 2-of-3 call removes it, confirmed gone from
+both the vault's own bookkeeping and the policy's own storage (`adr/0016`).
 `timelock` is the newest and thinnest on property-test coverage.
 `oracle-router` and `policy-venue` also have real cargo-fuzz targets
 (`contracts/oracle-router/fuzz`, `contracts/policy-venue/fuzz`), going
@@ -142,9 +153,10 @@ correctly escalated a real `risk-engine` deployment to Emergency
 (`adr/0014`). `keeper/src/swap.ts`, the XLM fee-floor trigger, has 9
 further pure unit tests plus a real testnet run of its own: an XLM
 balance genuinely below the configured floor triggered a real signed
-swap through the real Soroswap router, confirmed by real balance reads
+swap authorized through a real vault's own `r_swap` context rule (not a
+plain funded identity, `adr/0016`), confirmed by real balance reads
 before and after, and a second run once above the floor correctly took
-no action (`adr/0015`).
+no action (`adr/0015`, `adr/0016`).
 `drills/yieldblox_drill.sh` runs a real 100x price spike against a real
 deployed secondary feed live on testnet and confirms OracleRouter refuses
 it, its own `check_and_trip` really pauses a real registered

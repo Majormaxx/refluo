@@ -5,18 +5,21 @@ as each piece of functionality lands, not held back until an audit is near.
 
 Planned and in-progress drills:
 
-- **Refluo disappears drill**: simulate total loss of keeper infrastructure
-  and dashboard availability; verify an admin acting alone can uninstall
-  all policies and recover the vault with zero off-chain dependency.
-  Proven in two stages so far, live testnet deployment (`vault` and
-  `policy-admin-threshold`, first ever for both) confirms a real 2-of-3
-  admin threshold bootstraps correctly and enforces 2-of-3 in isolation;
-  `contracts/integration-tests` proves the uninstall wiring cross-contract.
-  What's not built: the actual multi-signer transaction submission, which
-  is genuinely blocked on the SDK's signing module, not deferred by
-  choice. Plain `stellar-cli` has no built-in way to construct the nested
-  authorization entries a real 2-of-3 call needs against a
-  `stellar-accounts` CustomAccountInterface vault. See `adr/0008`.
+- **Refluo disappears drill** (`refluo_disappears_drill.mjs`): simulate
+  total loss of keeper infrastructure and dashboard availability; verify
+  an admin acting alone can uninstall all policies and recover the vault
+  with zero off-chain dependency. Done and live-verified end to end: a
+  real 2-of-3 call installs a real `policy-venue` rule (the kind of setup
+  step a live operator would do), a second real 2-of-3 call removes it,
+  and both the vault's own rule bookkeeping and `policy-venue`'s own
+  per-rule storage are confirmed gone afterward. Every step runs as a
+  plain local script signing with real admin keys, no keeper process, no
+  dashboard backend, nothing but the script and the vault's own raw
+  contract address. What closed this: `sdk/src/smartAccountAuth.ts`, the
+  SDK's real signing module, constructs the nested authorization entries
+  plain `stellar-cli` has no built-in way to build against a
+  `stellar-accounts` CustomAccountInterface vault. See `adr/0008` for the
+  original gap, `adr/0016` for the real fix.
 - **Manipulated-feed drill** (`yieldblox_drill.sh`, named for the exploit
   this defends against): feed one oracle input a 100x price spike and
   confirm the router refuses to treat it as real, deployments stop,

@@ -15,12 +15,16 @@ The XLM fee-floor swap trigger is also real and working (`src/swap.ts`):
 reads a real XLM balance and a real `OracleRouter` price, and once the
 balance drops below a configured floor, submits a real, oracle-floor-
 bounded swap through the real Soroswap testnet router, sanity-checked
-against a real live router quote first. Live-verified against this
-keeper's own funded testnet identity: a real below-floor balance
-triggered a real signed swap, confirmed by real balance reads before and
-after. Pointing this at the real `vault` contract instead needs the
-SDK's signing module, the same gap `adr/0008` already found for the admin
-multisig case, not a new one. See `adr/0015`.
+against a real live router quote first. Submission goes through the real
+`vault` contract, not a plain funded identity: `VAULT_ADDRESS` needs an
+installed context rule (`SWAP_CONTEXT_RULE_ID`) naming this keeper's own
+address as a delegated signer with `policy-swap` attached, a session
+scope distinct from `R_ADMIN`. Live-verified end to end: a real
+below-floor balance on a real vault triggered a real swap authorized
+through that vault's own context rule, confirmed by real balance reads on
+the vault before and after. See `adr/0015` for the swap mechanism,
+`adr/0016` for the vault-authorized submission (the SDK's real signing
+module, `sdk/src/smartAccountAuth.ts`).
 
 Forecaster and reporter are not started.
 
@@ -28,7 +32,8 @@ Forecaster and reporter are not started.
 
 ```
 npm install
-cp .env.example .env   # fill in KEEPER_SECRET, RISK_ENGINE_ID, ACCOUNT
+cp .env.example .env   # fill in KEEPER_SECRET, RISK_ENGINE_ID, ACCOUNT,
+                        # VAULT_ADDRESS, SWAP_CONTEXT_RULE_ID
 npm test                # pure decision-logic tests, no network needed
 npm run sentinel:once   # one real utilization-monitor tick against testnet
 npm run sentinel        # continuous utilization-monitor loop
