@@ -6,6 +6,8 @@
     "sdk",
     "keeper",
     "keeper/packages/*",
-    "drills"
+    "drills",
+    "dashboard",
+    "dashboard/packages/*"
   ]
 }

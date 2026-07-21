@@ -69,8 +69,9 @@ against a bound. This split keeps the audited on-chain surface small.
 Its utilization monitor, XLM fee-floor swap trigger, Tier 0 sizing
 (Forecaster), Reflector Subscriptions webhook (quorum-checked guardian
 pause on confirmed price divergence), and reporter loop (real SLA
-telemetry) are real and live-verified (see Testing). No dashboard exists
-yet to display that telemetry (separately tracked).
+telemetry) are real and live-verified (see Testing). `dashboard/` is the
+real operator-facing app that displays that telemetry and exposes
+guardian/admin actions as browser-signed calls (adr/0021).
 
 ## Project structure
 
@@ -91,12 +92,16 @@ refluo/
                 (constructing and submitting a real multi-party vault
                 authorization) is real and live-verified (adr/0016), the
                 rest of the management-plane API is not started
-  dashboard/    operator-facing web app (not started)
+  dashboard/    operator-facing web app: real SEP-53 wallet auth, real
+                on-chain reads per panel, real browser-signed write
+                actions (pause/resume/cancel), Tailwind + shadcn/ui,
+                real classified error handling throughout (adr/0021)
   drills/       scripted adversarial scenarios, some live (see Testing)
 ```
 
-`sdk/`, `keeper/`, and `drills/` are npm workspaces sharing one root
-`node_modules` (root `package.json`), not three separate installs.
+`sdk/`, `keeper/`, `dashboard/`, and `drills/` are npm workspaces sharing
+one root `node_modules` (root `package.json`), not four separate
+installs.
 
 ## Quickstart
 
@@ -203,7 +208,22 @@ against the real Soroswap pool: a real attacker front-run measurably
 shifts the real pool's price, the victim's original zero-tolerance quote
 then reverts for real against the real router, and a
 production-realistic 97%-floor swap still succeeds once the pool is
-restored (`adr/0015`). Don't infer coverage from a `#[cfg(test)]`
+restored (`adr/0015`). `dashboard/` has 47 real unit tests (`npm test`,
+no network needed): real SEP-53 sign/verify round-trips against locally
+generated keypairs, session-token HMAC round-trips, API-error
+classification against real transient-RPC message strings this
+workspace has actually seen, alerts-config URL validation, and wallet-
+error classification against `@stellar/stellar-sdk/contract`'s own real
+`AssembledTransaction.Errors` classes. `next dev` was run directly and
+exercised live: the homepage rendered a real compiled Tailwind/shadcn
+stylesheet, `/api/timelock/proposals` returned a real pending proposal
+from a live deployed `timelock`, and every auth-gated route correctly
+returned a real 401 with the new error envelope before any handler ran
+(`adr/0021`, which also discloses the one gap: no real browser with the
+Freighter extension exists in this project's dev sandbox, so the actual
+click-through signing flow is unverified end to end, everything it
+depends on is independently real and verified instead).
+Don't infer coverage from a `#[cfg(test)]`
 module existing, check what's actually asserted.
 
 ## Decisions & trade-offs
