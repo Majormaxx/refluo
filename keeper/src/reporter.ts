@@ -77,11 +77,20 @@ export interface RecallLatencySample {
   executedAtSeconds: number;
 }
 
+export interface LatencyBucket {
+  label: string;
+  minSeconds: number;
+  /** Exclusive upper bound; `null` means unbounded (the overflow bucket). */
+  maxSeconds: number | null;
+  count: number;
+}
+
 export interface LatencyHistogram {
   count: number;
   p50Seconds: number;
   p95Seconds: number;
   p99Seconds: number;
+  buckets: LatencyBucket[];
 }
 
 function percentile(sortedValues: number[], p: number): number {
@@ -93,6 +102,35 @@ function percentile(sortedValues: number[], p: number): number {
     Math.ceil((p / 100) * sortedValues.length) - 1,
   );
   return sortedValues[Math.max(0, index)];
+}
+
+/** Fixed bucket boundaries for the recall-latency histogram, in seconds.
+ * `null` as the upper bound marks the overflow bucket. Chosen to span a
+ * real recall's expected shape (most latency is one poll-interval plus
+ * execution time, typically under a couple minutes) while still catching
+ * a real outlier without an unbounded number of buckets. */
+const RECALL_LATENCY_BUCKET_BOUNDS: Array<[number, number | null]> = [
+  [0, 10],
+  [10, 30],
+  [30, 60],
+  [60, 120],
+  [120, 300],
+  [300, null],
+];
+
+function bucketLabel(minSeconds: number, maxSeconds: number | null): string {
+  return maxSeconds === null ? `${minSeconds}s+` : `${minSeconds}-${maxSeconds}s`;
+}
+
+function bucketLatencies(latencies: number[]): LatencyBucket[] {
+  return RECALL_LATENCY_BUCKET_BOUNDS.map(([minSeconds, maxSeconds]) => ({
+    label: bucketLabel(minSeconds, maxSeconds),
+    minSeconds,
+    maxSeconds,
+    count: latencies.filter(
+      (v) => v >= minSeconds && (maxSeconds === null || v < maxSeconds),
+    ).length,
+  }));
 }
 
 /** Latency from a real detected shortfall to a real executed recall
@@ -113,6 +151,7 @@ export function computeRecallLatencyHistogram(
     p50Seconds: percentile(latencies, 50),
     p95Seconds: percentile(latencies, 95),
     p99Seconds: percentile(latencies, 99),
+    buckets: bucketLatencies(latencies),
   };
 }
 
@@ -202,6 +241,40 @@ export function backtestForecasterError(
   return samples;
 }
 
+/** Evenly-spaced downsampling for chart series: always keeps the first
+ * and last real point (so a chart's time axis never silently shrinks)
+ * and picks real intermediate points at a fixed stride rather than
+ * averaging/interpolating, so every plotted point is still a real
+ * observation, never a synthesized one. */
+export function downsampleSeries<T>(items: T[], maxPoints: number): T[] {
+  if (items.length <= maxPoints || maxPoints <= 1) {
+    return items;
+  }
+  const stride = (items.length - 1) / (maxPoints - 1);
+  const picked: T[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    picked.push(items[Math.round(i * stride)]);
+  }
+  return picked;
+}
+
+/** Tier0Sample with bigint balances stringified for JSON transport (the
+ * same string-bigint convention metricsLog.ts already uses), a real
+ * point in the balance-vs-target series a chart plots directly. */
+export interface Tier0SeriesPoint {
+  timestampSeconds: number;
+  balanceStroops: string;
+  targetStroops: string;
+}
+
+export function toTier0SeriesPoints(samples: Tier0Sample[]): Tier0SeriesPoint[] {
+  return samples.map((s) => ({
+    timestampSeconds: s.timestampSeconds,
+    balanceStroops: s.balanceStroops.toString(),
+    targetStroops: s.targetStroops.toString(),
+  }));
+}
+
 export interface SlaSnapshot {
   generatedAtSeconds: number;
   windowStartSeconds: number;
@@ -210,4 +283,6 @@ export interface SlaSnapshot {
   pauseStats: PauseStats;
   recallLatency: LatencyHistogram;
   forecasterError: ForecasterErrorStats;
+  tier0Series: Tier0SeriesPoint[];
+  forecasterErrorSeries: ForecasterErrorSample[];
 }

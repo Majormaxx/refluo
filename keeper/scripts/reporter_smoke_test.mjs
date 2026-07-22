@@ -214,6 +214,25 @@ check(
   snapshot.recallLatency.count === 1 && snapshot.recallLatency.p50Seconds === 30,
 );
 check(
+  "recall latency histogram sorts the real 30s sample into the 10-30s bucket",
+  snapshot.recallLatency.buckets.find((b) => b.label === "10-30s")?.count === 1,
+);
+check(
+  "recall latency histogram bucket counts sum to the real total",
+  snapshot.recallLatency.buckets.reduce((sum, b) => sum + b.count, 0) === snapshot.recallLatency.count,
+);
+check(
+  "tier0Series carries the two real seeded samples as stringified balances",
+  snapshot.tier0Series.length === 2 &&
+    snapshot.tier0Series[0].balanceStroops === "200" &&
+    snapshot.tier0Series[1].balanceStroops === "50",
+);
+check(
+  "forecasterErrorSeries is a real array sized to forecasterError.count",
+  Array.isArray(snapshot.forecasterErrorSeries) &&
+    snapshot.forecasterErrorSeries.length === snapshot.forecasterError.count,
+);
+check(
   "forecaster error backtest ran against real burn history without throwing (count is a real, possibly-zero number)",
   typeof snapshot.forecasterError.count === "number",
 );

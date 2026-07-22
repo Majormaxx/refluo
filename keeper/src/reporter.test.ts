@@ -6,6 +6,8 @@ import {
   computeRecallLatencyHistogram,
   computeForecasterError,
   backtestForecasterError,
+  downsampleSeries,
+  toTier0SeriesPoints,
 } from "./reporter.js";
 import type { BurnObservation } from "./forecaster.js";
 
@@ -82,9 +84,14 @@ test("computePauseStats sums multiple real pauses in the window", () => {
   assert.equal(stats.totalPauseDurationSeconds, 150);
 });
 
-test("computeRecallLatencyHistogram returns zeroed stats with no samples", () => {
+test("computeRecallLatencyHistogram returns zeroed stats and zero-count buckets with no samples", () => {
   const hist = computeRecallLatencyHistogram([]);
-  assert.deepEqual(hist, { count: 0, p50Seconds: 0, p95Seconds: 0, p99Seconds: 0 });
+  assert.equal(hist.count, 0);
+  assert.equal(hist.p50Seconds, 0);
+  assert.equal(hist.p95Seconds, 0);
+  assert.equal(hist.p99Seconds, 0);
+  assert.equal(hist.buckets.length, 6);
+  assert.ok(hist.buckets.every((b) => b.count === 0));
 });
 
 test("computeRecallLatencyHistogram computes real percentiles over recorded latencies", () => {
@@ -102,6 +109,22 @@ test("computeRecallLatencyHistogram computes real percentiles over recorded late
 test("computeRecallLatencyHistogram ignores a negative (clock-skew) latency", () => {
   const hist = computeRecallLatencyHistogram([{ detectedAtSeconds: 100, executedAtSeconds: 50 }]);
   assert.equal(hist.count, 0);
+});
+
+test("computeRecallLatencyHistogram sorts real latencies into the correct fixed buckets", () => {
+  const latenciesSeconds = [5, 9, 10, 29, 30, 59, 60, 119, 120, 299, 300, 1000];
+  const samples = latenciesSeconds.map((v) => ({ detectedAtSeconds: 0, executedAtSeconds: v }));
+  const hist = computeRecallLatencyHistogram(samples);
+  assert.equal(hist.count, latenciesSeconds.length);
+  const byLabel = Object.fromEntries(hist.buckets.map((b) => [b.label, b.count]));
+  assert.equal(byLabel["0-10s"], 2); // 5, 9
+  assert.equal(byLabel["10-30s"], 2); // 10, 29
+  assert.equal(byLabel["30-60s"], 2); // 30, 59
+  assert.equal(byLabel["60-120s"], 2); // 60, 119
+  assert.equal(byLabel["120-300s"], 2); // 120, 299
+  assert.equal(byLabel["300s+"], 2); // 300, 1000
+  const totalBucketed = hist.buckets.reduce((sum, b) => sum + b.count, 0);
+  assert.equal(totalBucketed, latenciesSeconds.length);
 });
 
 test("computeForecasterError returns zeroed stats with no samples", () => {
@@ -188,4 +211,36 @@ test("backtestForecasterError respects the backtestHours window, not the full hi
   const observations = hourlyObservations(Array(200).fill(50));
   const samples = backtestForecasterError(observations, 24);
   assert.equal(samples.length, 24);
+});
+
+test("downsampleSeries returns the input unchanged when already at or under the cap", () => {
+  const items = [1, 2, 3];
+  assert.deepEqual(downsampleSeries(items, 10), items);
+  assert.deepEqual(downsampleSeries(items, 3), items);
+});
+
+test("downsampleSeries always keeps the first and last real point", () => {
+  const items = Array.from({ length: 1000 }, (_, i) => i);
+  const picked = downsampleSeries(items, 50);
+  assert.equal(picked.length, 50);
+  assert.equal(picked[0], 0);
+  assert.equal(picked[picked.length - 1], 999);
+});
+
+test("downsampleSeries picks strictly increasing real indices, never duplicating or reordering", () => {
+  const items = Array.from({ length: 37 }, (_, i) => i);
+  const picked = downsampleSeries(items, 10);
+  assert.equal(picked.length, 10);
+  for (let i = 1; i < picked.length; i++) {
+    assert.ok(picked[i] > picked[i - 1], `expected strictly increasing, got ${picked}`);
+  }
+});
+
+test("toTier0SeriesPoints stringifies real bigint balances without losing precision", () => {
+  const points = toTier0SeriesPoints([
+    { timestampSeconds: 1, balanceStroops: 123456789012345678901234567890n, targetStroops: 100n },
+  ]);
+  assert.equal(points[0].balanceStroops, "123456789012345678901234567890");
+  assert.equal(points[0].targetStroops, "100");
+  assert.equal(points[0].timestampSeconds, 1);
 });

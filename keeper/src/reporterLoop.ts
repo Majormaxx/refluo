@@ -16,6 +16,8 @@ import {
   computeRecallLatencyHistogram,
   computeForecasterError,
   backtestForecasterError,
+  downsampleSeries,
+  toTier0SeriesPoints,
   type PauseEvent,
   type Tier0Sample,
   type RecallLatencySample,
@@ -40,6 +42,7 @@ const WINDOW_HOURS = Number(process.env.REPORTER_WINDOW_HOURS ?? "168");
 const FORECASTER_ERROR_BACKTEST_HOURS = Number(
   process.env.REPORTER_FORECASTER_ERROR_BACKTEST_HOURS ?? "72",
 );
+const CHART_SERIES_MAX_POINTS = Number(process.env.REPORTER_CHART_SERIES_MAX_POINTS ?? "200");
 
 const SECONDS_PER_LEDGER_APPROX = 5;
 
@@ -190,6 +193,9 @@ export async function tick(): Promise<SlaSnapshot> {
       `meanAbsPct=${forecasterError.meanAbsPercentError.toFixed(1)}% p99Abs=${forecasterError.p99AbsErrorStroopsPerHour.toFixed(0)}/hr`,
   );
 
+  const tier0Series = toTier0SeriesPoints(downsampleSeries(tier0Samples, CHART_SERIES_MAX_POINTS));
+  const forecasterErrorSeries = downsampleSeries(forecasterErrorSamples, CHART_SERIES_MAX_POINTS);
+
   const snapshot: SlaSnapshot = {
     generatedAtSeconds: nowSeconds,
     windowStartSeconds,
@@ -198,6 +204,8 @@ export async function tick(): Promise<SlaSnapshot> {
     pauseStats,
     recallLatency,
     forecasterError,
+    tier0Series,
+    forecasterErrorSeries,
   };
   writeFileSync(SNAPSHOT_FILE, JSON.stringify(snapshot, null, 2));
   log(`wrote SLA snapshot to ${SNAPSHOT_FILE}`);
