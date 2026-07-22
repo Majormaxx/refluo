@@ -12,14 +12,9 @@ import {
 import { PanelError } from "@/components/PanelError";
 import { PanelSkeleton } from "@/components/PanelSkeleton";
 import { useApiResource } from "@/hooks/useApiResource";
+import { SYSTEM_STATE_STYLE } from "@/lib/systemStateStyle";
+import { cn } from "@/lib/utils";
 import type { VaultOverview } from "@/lib/contracts/vaultOverview";
-
-const STATE_BADGE_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
-  Normal: "secondary",
-  PreemptiveDrain: "default",
-  Emergency: "destructive",
-  Paused: "destructive",
-};
 
 export function VaultOverviewPanel() {
   const { data, error, loading, reload } = useApiResource<VaultOverview>("/api/vault/overview");
@@ -38,8 +33,19 @@ export function VaultOverviewPanel() {
             <div className="flex flex-wrap items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">System state</span>
-                <Badge variant={STATE_BADGE_VARIANT[data.systemState] ?? "secondary"}>
-                  {data.systemState}
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    SYSTEM_STATE_STYLE[data.systemState].badgeClassName,
+                  )}
+                >
+                  {SYSTEM_STATE_STYLE[data.systemState].label}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Risk profile</span>
+                <Badge variant={data.riskProfile === "Custom" ? "outline" : "secondary"}>
+                  {data.riskProfile}
                 </Badge>
               </div>
               <div>
@@ -51,6 +57,10 @@ export function VaultOverviewPanel() {
               </div>
               <div>
                 <span className="text-muted-foreground">XLM balance</span> {data.xlmBalance} stroops
+              </div>
+              <div>
+                <span className="text-muted-foreground">Critical floor</span>{" "}
+                {data.criticalFloor} stroops
               </div>
             </div>
 

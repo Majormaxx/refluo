@@ -13,10 +13,13 @@ import { pauseAsGuardian, resumeEarlyAsAdmin } from "@/lib/actions/healthMonitor
 import { describeActionError } from "@/lib/actions/actionError";
 import type { GuardianPanelData } from "@/lib/contracts/healthMonitor";
 
+const PAUSE_STATUS_POLL_MS = 15_000;
+
 export function GuardianPanel() {
   const { authenticated, role, address } = useAuth();
   const { data, error, loading, reload } = useApiResource<GuardianPanelData>(
     "/api/health-monitor/status",
+    { pollIntervalMs: PAUSE_STATUS_POLL_MS },
   );
   const [busy, setBusy] = useState(false);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));

@@ -18,11 +18,23 @@ import { fetchJson, ApiClientError } from "@/lib/apiClient";
 export interface ApiResourceState<T> {
   data: T | null;
   error: ApiClientError | null;
+  /** True only for the first fetch (no data yet). A background poll or a
+   * manual reload() while data from a prior successful fetch is already
+   * on screen never re-triggers the full loading/skeleton state — the
+   * existing data stays visible, `refreshing` is the signal for that. */
   loading: boolean;
+  /** True whenever any fetch (initial, polled, or manual reload) is in
+   * flight, including ones that don't flip `loading`. Panels that want a
+   * subtle "updating" indicator during a background refresh use this;
+   * panels that don't care can ignore it. */
+  refreshing: boolean;
   reload: () => void;
 }
 
-export function useApiResource<T>(url: string | null): ApiResourceState<T> {
+export function useApiResource<T>(
+  url: string | null,
+  options?: { pollIntervalMs?: number },
+): ApiResourceState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<ApiClientError | null>(null);
   const [completedKey, setCompletedKey] = useState<string | null>(null);
@@ -59,5 +71,16 @@ export function useApiResource<T>(url: string | null): ApiResourceState<T> {
 
   const reload = useCallback(() => setReloadToken((t) => t + 1), []);
 
-  return { data, error, loading: !!key && completedKey !== key, reload };
+  const pollIntervalMs = options?.pollIntervalMs;
+  useEffect(() => {
+    if (!url || !pollIntervalMs) {
+      return;
+    }
+    const interval = setInterval(reload, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [url, pollIntervalMs, reload]);
+
+  const refreshing = !!key && completedKey !== key;
+
+  return { data, error, loading: refreshing && data === null, refreshing, reload };
 }
