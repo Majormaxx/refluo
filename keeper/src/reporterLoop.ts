@@ -12,6 +12,7 @@ import { writeFileSync } from "node:fs";
 import { rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import {
   computeTier0HitRate,
+  computeAgentUptime,
   computePauseStats,
   computeRecallLatencyHistogram,
   computeForecasterError,
@@ -152,6 +153,10 @@ function tier0SamplesFromLog(windowStartSeconds: number): Tier0Sample[] {
       timestampSeconds: e.timestampSeconds,
       balanceStroops: BigInt(e.balanceStroops as string),
       targetStroops: BigInt(e.targetStroops as string),
+      // Real samples logged before this field existed won't have it;
+      // computeAgentUptime excludes those rather than guessing.
+      criticalFloorStroops:
+        e.criticalFloorStroops !== undefined ? BigInt(e.criticalFloorStroops as string) : undefined,
     }));
 }
 
@@ -177,6 +182,8 @@ export async function tick(): Promise<SlaSnapshot> {
   const tier0Samples = tier0SamplesFromLog(windowStartSeconds);
   const tier0HitRate = computeTier0HitRate(tier0Samples);
   log(`tier0 hit rate over ${tier0Samples.length} real samples: ${(tier0HitRate * 100).toFixed(1)}%`);
+  const agentUptime = computeAgentUptime(tier0Samples);
+  log(`agent uptime (ticks at/above critical floor): ${(agentUptime * 100).toFixed(1)}%`);
 
   const recallSamples = recallLatencySamplesFromLog(windowStartSeconds);
   const recallLatency = computeRecallLatencyHistogram(recallSamples);
@@ -201,6 +208,7 @@ export async function tick(): Promise<SlaSnapshot> {
     windowStartSeconds,
     windowEndSeconds: nowSeconds,
     tier0HitRate,
+    agentUptime,
     pauseStats,
     recallLatency,
     forecasterError,

@@ -213,6 +213,13 @@ export async function tick(): Promise<void> {
   const tierState = (await tierStateTx.simulate()).result;
   const onChainTarget = tierState.tier0_target;
 
+  // Read once per tick, alongside the tier state fetch above, purely for
+  // the tier0_sample event below — reporterLoop.ts's real Agent uptime
+  // metric needs the critical floor to know what threshold a sample was
+  // actually being measured against, not just the sizing target.
+  const configTx = await riskEngine.config({ account: ACCOUNT });
+  const criticalFloor = (await configTx.simulate()).result.critical_floor;
+
   const nowSeconds = Math.floor(Date.now() / 1000);
   const hysteresisState = loadHysteresisState();
   const decision = applyHysteresis(computedTarget, onChainTarget, nowSeconds, hysteresisState);
@@ -261,6 +268,7 @@ export async function tick(): Promise<void> {
       timestampSeconds: tickStartSeconds,
       balanceStroops: tier0Balance.toString(),
       targetStroops: decision.appliedTarget.toString(),
+      criticalFloorStroops: criticalFloor.toString(),
     });
 
     if (shouldRecall(tier0Balance, decision.appliedTarget, REFILL_BAND_BPS)) {

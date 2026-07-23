@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeTier0HitRate,
+  computeAgentUptime,
   computePauseStats,
   computeRecallLatencyHistogram,
   computeForecasterError,
@@ -31,6 +32,48 @@ test("computeTier0HitRate reflects the real fraction of hits", () => {
     { timestampSeconds: 4, balanceStroops: 200n, targetStroops: 100n },
   ]);
   assert.equal(rate, 0.5);
+});
+
+test("computeAgentUptime is 0 with no samples, not a false perfect score", () => {
+  assert.equal(computeAgentUptime([]), 0);
+});
+
+test("computeAgentUptime is 0 when every sample predates the critical-floor field, not a false perfect score", () => {
+  const uptime = computeAgentUptime([
+    { timestampSeconds: 1, balanceStroops: 100n, targetStroops: 100n },
+    { timestampSeconds: 2, balanceStroops: 200n, targetStroops: 100n },
+  ]);
+  assert.equal(uptime, 0);
+});
+
+test("computeAgentUptime reflects the real fraction of ticks at/above the real critical floor", () => {
+  const uptime = computeAgentUptime([
+    { timestampSeconds: 1, balanceStroops: 100n, targetStroops: 100n, criticalFloorStroops: 50n },
+    { timestampSeconds: 2, balanceStroops: 40n, targetStroops: 100n, criticalFloorStroops: 50n },
+    { timestampSeconds: 3, balanceStroops: 60n, targetStroops: 100n, criticalFloorStroops: 50n },
+    { timestampSeconds: 4, balanceStroops: 200n, targetStroops: 100n, criticalFloorStroops: 50n },
+  ]);
+  assert.equal(uptime, 0.75);
+});
+
+test("computeAgentUptime excludes samples with no logged critical floor rather than guessing one", () => {
+  const uptime = computeAgentUptime([
+    // Both real hits against their own real floor...
+    { timestampSeconds: 1, balanceStroops: 100n, targetStroops: 100n, criticalFloorStroops: 50n },
+    { timestampSeconds: 2, balanceStroops: 100n, targetStroops: 100n, criticalFloorStroops: 50n },
+    // ...this one predates the field and must not silently count either way.
+    { timestampSeconds: 3, balanceStroops: 1n, targetStroops: 100n },
+  ]);
+  assert.equal(uptime, 1, "the floor-less sample is excluded, not counted as a miss");
+});
+
+test("computeAgentUptime treats the critical floor as the real threshold, distinct from the sizing target", () => {
+  // Below the sizing target but still above the real critical floor: this
+  // must count as uptime, since the two thresholds mean different things.
+  const uptime = computeAgentUptime([
+    { timestampSeconds: 1, balanceStroops: 60n, targetStroops: 100n, criticalFloorStroops: 50n },
+  ]);
+  assert.equal(uptime, 1);
 });
 
 test("computePauseStats counts a pause fully inside the window", () => {

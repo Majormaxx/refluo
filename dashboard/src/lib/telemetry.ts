@@ -36,6 +36,11 @@ export interface SlaSnapshot {
   windowStartSeconds: number;
   windowEndSeconds: number;
   tier0HitRate: number;
+  /** % of monitored ticks at/above the vault's real critical floor — a
+   * deliberately scoped-down version of the PRD's literal "excluding
+   * manual top-ups" definition; that distinction has no real signal to
+   * derive it from today (see keeper/src/reporter.ts's own doc comment). */
+  agentUptime: number;
   pauseStats: { pauseCount: number; totalPauseDurationSeconds: number };
   recallLatency: {
     count: number;

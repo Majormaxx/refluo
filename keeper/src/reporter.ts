@@ -10,6 +10,10 @@ export interface Tier0Sample {
   timestampSeconds: number;
   balanceStroops: bigint;
   targetStroops: bigint;
+  /** Optional, not required: real samples logged before this field
+   * existed won't have it. computeAgentUptime excludes those rather than
+   * guessing a threshold for them. */
+  criticalFloorStroops?: bigint;
 }
 
 /** Fraction of samples where the real Tier 0 balance met or exceeded the
@@ -23,6 +27,24 @@ export function computeTier0HitRate(samples: Tier0Sample[]): number {
   }
   const hits = samples.filter((s) => s.balanceStroops >= s.targetStroops).length;
   return hits / samples.length;
+}
+
+/** "Agent uptime" (PRD §17's SLA metrics table): fraction of monitored
+ * ticks where the real Tier 0 balance was at or above the vault's real
+ * critical floor. This is a deliberately scoped-down version of the PRD's
+ * literal definition ("% time funded above critical floor, excluding
+ * manual top-ups") — no signal exists today to distinguish a manual
+ * top-up from the agent's own automated recall, and inventing one would
+ * be exactly the kind of fake precision this workspace's own doctrine
+ * avoids. Samples with no logged critical floor (recorded before that
+ * field existed) are excluded rather than guessed at. */
+export function computeAgentUptime(samples: Tier0Sample[]): number {
+  const withFloor = samples.filter((s) => s.criticalFloorStroops !== undefined);
+  if (withFloor.length === 0) {
+    return 0;
+  }
+  const above = withFloor.filter((s) => s.balanceStroops >= s.criticalFloorStroops!).length;
+  return above / withFloor.length;
 }
 
 export interface PauseEvent {
@@ -280,6 +302,7 @@ export interface SlaSnapshot {
   windowStartSeconds: number;
   windowEndSeconds: number;
   tier0HitRate: number;
+  agentUptime: number;
   pauseStats: PauseStats;
   recallLatency: LatencyHistogram;
   forecasterError: ForecasterErrorStats;

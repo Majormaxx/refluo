@@ -11,18 +11,38 @@
 import "server-only";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { optionalEnv } from "./env";
-import type { AlertsConfig } from "./alertsConfigValidation";
+import { ALERT_EVENT_TYPES, ALERT_DESTINATIONS, type AlertsConfig, type EventRoutes } from "./alertsConfigValidation";
 
-export type { AlertsConfig } from "./alertsConfigValidation";
-export { validateAlertsConfigPatch } from "./alertsConfigValidation";
+export type {
+  AlertsConfig,
+  AlertEventType,
+  AlertDestination,
+  EventRouteConfig,
+  EventRoutes,
+} from "./alertsConfigValidation";
+export { validateAlertsConfigPatch, ALERT_EVENT_TYPES, ALERT_DESTINATIONS } from "./alertsConfigValidation";
 
 const CONFIG_FILE = optionalEnv("ALERTS_CONFIG_FILE", ".alerts-config.json");
+
+// Opt-in by default: an operator explicitly turns each event/destination
+// pair on, rather than every webhook firing the moment a URL is saved.
+function defaultEventRoutes(): EventRoutes {
+  const routes = {} as EventRoutes;
+  for (const eventType of ALERT_EVENT_TYPES) {
+    routes[eventType] = {} as EventRoutes[typeof eventType];
+    for (const destination of ALERT_DESTINATIONS) {
+      routes[eventType][destination] = false;
+    }
+  }
+  return routes;
+}
 
 const DEFAULT_CONFIG: AlertsConfig = {
   webhookUrl: "",
   slackUrl: "",
   discordUrl: "",
   pagerdutyRoutingKey: "",
+  eventRoutes: defaultEventRoutes(),
 };
 
 export function readAlertsConfig(): AlertsConfig {

@@ -50,3 +50,52 @@ test("validateAlertsConfigPatch rejects a non-http(s) URL scheme", () => {
 test("validateAlertsConfigPatch does not URL-validate pagerdutyRoutingKey", () => {
   assert.equal(validateAlertsConfigPatch({ pagerdutyRoutingKey: "not-a-url-at-all" }), null);
 });
+
+test("validateAlertsConfigPatch accepts a real, fully-specified eventRoutes object", () => {
+  assert.equal(
+    validateAlertsConfigPatch({
+      eventRoutes: {
+        "pause.triggered": { webhook: true, slack: false, discord: false, pagerduty: true },
+        "recall.triggered": { webhook: false, slack: false, discord: false, pagerduty: false },
+        "state.transitioned": { webhook: false, slack: true, discord: false, pagerduty: false },
+        "cap.breached": { webhook: false, slack: false, discord: false, pagerduty: false },
+      },
+    }),
+    null,
+  );
+});
+
+test("validateAlertsConfigPatch accepts a partial eventRoutes object", () => {
+  assert.equal(
+    validateAlertsConfigPatch({
+      eventRoutes: { "pause.triggered": { webhook: true, slack: false, discord: false, pagerduty: false } },
+    }),
+    null,
+  );
+});
+
+test("validateAlertsConfigPatch rejects an unknown event type in eventRoutes", () => {
+  const error = validateAlertsConfigPatch({
+    eventRoutes: { "not.a.real.event": { webhook: true, slack: false, discord: false, pagerduty: false } },
+  });
+  assert.match(error!, /unknown event type/);
+});
+
+test("validateAlertsConfigPatch rejects an unknown destination in eventRoutes", () => {
+  const error = validateAlertsConfigPatch({
+    eventRoutes: { "pause.triggered": { webhook: true, telegram: true } },
+  });
+  assert.match(error!, /unknown destination/);
+});
+
+test("validateAlertsConfigPatch rejects a non-boolean destination value in eventRoutes", () => {
+  const error = validateAlertsConfigPatch({
+    eventRoutes: { "pause.triggered": { webhook: "yes" } },
+  });
+  assert.match(error!, /must be a boolean/);
+});
+
+test("validateAlertsConfigPatch rejects a non-object eventRoutes", () => {
+  const error = validateAlertsConfigPatch({ eventRoutes: "not an object" });
+  assert.match(error!, /eventRoutes must be a JSON object/);
+});
