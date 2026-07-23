@@ -1,9 +1,16 @@
 "use client";
 import { useState } from "react";
 import { toast } from "sonner";
-import { XCircle } from "lucide-react";
+import { XCircle, Eye } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableHeader,
@@ -26,6 +33,7 @@ export function TimelockPanel() {
     "/api/timelock/proposals",
   );
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [detailProposal, setDetailProposal] = useState<PendingProposal | null>(null);
 
   async function handleCancel(id: string) {
     if (!address) return;
@@ -82,17 +90,23 @@ export function TimelockPanel() {
                       {p.proposer.slice(0, 6)}…{p.proposer.slice(-6)}
                     </TableCell>
                     <TableCell>
-                      {role === "admin" && (
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => handleCancel(p.id)}
-                          disabled={busyId === p.id}
-                        >
-                          <XCircle className="size-3.5" />
-                          {busyId === p.id ? "Signing…" : "Cancel"}
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setDetailProposal(p)}>
+                          <Eye className="size-3.5" />
+                          Details
                         </Button>
-                      )}
+                        {role === "admin" && (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleCancel(p.id)}
+                            disabled={busyId === p.id}
+                          >
+                            <XCircle className="size-3.5" />
+                            {busyId === p.id ? "Signing…" : "Cancel"}
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -101,6 +115,57 @@ export function TimelockPanel() {
           </div>
         )}
       </CardContent>
+
+      <Dialog
+        open={detailProposal !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetailProposal(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Proposal #{detailProposal?.id}</DialogTitle>
+            <DialogDescription>
+              Real on-chain calldata — the exact target, function, and arguments this proposal
+              will execute once its timelock delay elapses.
+            </DialogDescription>
+          </DialogHeader>
+          {detailProposal && (
+            <div className="space-y-3 text-sm">
+              <div>
+                <div className="text-muted-foreground">Target</div>
+                <div className="font-mono text-xs break-all">{detailProposal.target}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Function</div>
+                <div className="font-mono text-xs">{detailProposal.fnName}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Arguments ({detailProposal.args.length})</div>
+                {detailProposal.args.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">none</div>
+                ) : (
+                  <ol className="list-decimal space-y-1 pl-5">
+                    {detailProposal.args.map((arg, i) => (
+                      <li key={i} className="font-mono text-xs break-all">
+                        {arg}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+              <div>
+                <div className="text-muted-foreground">ETA</div>
+                <div className="text-xs">{new Date(detailProposal.etaSeconds * 1000).toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Proposer</div>
+                <div className="font-mono text-xs break-all">{detailProposal.proposer}</div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

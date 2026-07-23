@@ -18,6 +18,7 @@ import {
 } from "../stellar";
 import { withRetry } from "../withRetry";
 import { deriveRiskProfileLabel, type RiskProfileLabel } from "./riskProfile";
+import { decodeSystemState } from "./systemState";
 
 const vault = new VaultClient({
   contractId: VAULT_ADDRESS,
@@ -65,31 +66,34 @@ export interface VaultStatus {
   systemState: keyof typeof SystemState;
   tier0Target: string;
   usdcBalance: string;
+  criticalFloor: string;
 }
 
-/** Just the two real reads the status bar needs (system state, address)
- * plus the tier0 numbers it displays a hit-rate style summary from.
- * Deliberately skips the get_context_rules_count()/get_context_rule()
- * N+1 loop fetchVaultOverview() does for the full panel — that loop is
- * the real reason /api/vault/overview takes seconds, and the status bar
- * polls on an interval, so it needs a cheap call, not the expensive one
- * duplicated. */
+/** Just the real reads the status bar and SLA chart need (system state,
+ * address, tier0 numbers, critical floor) — deliberately skips the
+ * get_context_rules_count()/get_context_rule() N+1 loop
+ * fetchVaultOverview() does for the full panel, the real reason
+ * /api/vault/overview takes seconds. This stays cheap since callers poll
+ * it or call it on every chart render. */
 export async function fetchVaultStatus(): Promise<VaultStatus> {
-  const [stateTx, tierStateTx, usdcBalanceTx] = await Promise.all([
+  const [stateTx, tierStateTx, configTx, usdcBalanceTx] = await Promise.all([
     withRetry(() => riskEngine.state({ account: RISK_ENGINE_ACCOUNT })),
     withRetry(() => riskEngine.tier_state({ account: RISK_ENGINE_ACCOUNT })),
+    withRetry(() => riskEngine.config({ account: RISK_ENGINE_ACCOUNT })),
     withRetry(() => usdcToken.balance({ id: VAULT_ADDRESS })),
   ]);
-  const [state, tierState, usdcBalance] = await Promise.all([
+  const [state, tierState, config, usdcBalance] = await Promise.all([
     withRetry(() => stateTx.simulate()).then((r) => r.result),
     withRetry(() => tierStateTx.simulate()).then((r) => r.result as TierState),
+    withRetry(() => configTx.simulate()).then((r) => r.result),
     withRetry(() => usdcBalanceTx.simulate()).then((r) => r.result),
   ]);
   return {
     vaultAddress: VAULT_ADDRESS,
-    systemState: SystemState[state] as keyof typeof SystemState,
+    systemState: decodeSystemState(state),
     tier0Target: tierState.tier0_target.toString(),
     usdcBalance: usdcBalance.toString(),
+    criticalFloor: config.critical_floor.toString(),
   };
 }
 
@@ -134,12 +138,27 @@ export async function fetchVaultOverview(): Promise<VaultOverview> {
 
   return {
     vaultAddress: VAULT_ADDRESS,
-    systemState: SystemState[state] as keyof typeof SystemState,
+    systemState: decodeSystemState(state),
     tier0Target: tierState.tier0_target.toString(),
-    tier1Positions: [...tierState.tier1_positions.entries()].map(([venue, amount]) => ({
-      venue,
-      amount: amount.toString(),
-    })),
+    // Real finding, confirmed live once a vault's tier1_positions first
+    // became non-empty (verifying this against real data caught it): the
+    // generated client's own TS type claims `Map<string, i128>`, but the
+    // real runtime value is a plain JS Array of [venue, amount] tuples,
+    // not an actual Map instance. Calling .entries() on that array (Map
+    // semantics) silently produced [index, tuple] pairs instead of
+    // [venue, amount] — venue became the numeric index, amount became the
+    // whole tuple, and formatStroops's BigInt() call downstream threw
+    // trying to parse "venue,amount" as a number. Iterating the array
+    // directly, matching its real shape rather than its claimed type, is
+    // the fix; the same "never assume the shape, verify live" lesson
+    // adr/0017/0019/0021 already learned for event topics/values, this
+    // time for a simulated call's return value instead.
+    tier1Positions: (tierState.tier1_positions as unknown as Array<[string, bigint]>).map(
+      ([venue, amount]) => ({
+        venue,
+        amount: amount.toString(),
+      }),
+    ),
     usdcBalance: usdcBalance.toString(),
     xlmBalance: xlmBalance.toString(),
     contextRules,

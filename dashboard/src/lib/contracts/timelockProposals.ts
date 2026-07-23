@@ -38,6 +38,18 @@ export interface PendingProposal {
   target: string;
   fnName: string;
   proposer: string;
+  /** The real on-chain calldata (PRD 8.2's own wording), each arg
+   * native-decoded then JSON-stringified — Proposal.args is a Vec<Val>
+   * that can hold arbitrary shapes (addresses, amounts, nested structs),
+   * with no arg-name metadata available generically to label them, so a
+   * formatted per-arg string is the most honest generic display. Amounts
+   * decode to bigint, which JSON.stringify throws on natively, hence the
+   * replacer. */
+  args: string[];
+}
+
+function jsonStringifyWithBigInt(value: unknown): string {
+  return JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v));
 }
 
 export async function fetchPendingProposals(): Promise<PendingProposal[]> {
@@ -127,6 +139,13 @@ export async function fetchPendingProposals(): Promise<PendingProposal[]> {
       target: proposal.target,
       fnName: proposal.fn_name,
       proposer: proposal.proposer,
+      // Real finding, confirmed live against a real deployed timelock
+      // (a real propose() with two Address args): unlike raw event
+      // topics/values (which need scValToNative), the generated client
+      // already native-decodes Proposal.args itself — each element here
+      // is already a plain JS value (string/number/bigint/...), not a raw
+      // ScVal, so no additional scValToNative call belongs here.
+      args: proposal.args.map((arg) => jsonStringifyWithBigInt(arg)),
     });
   }
 
