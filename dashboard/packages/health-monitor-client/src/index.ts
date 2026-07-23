@@ -31,6 +31,12 @@ if (typeof window !== "undefined") {
 }
 
 
+export const networks = {
+  testnet: {
+    networkPassphrase: "Test SDF Network ; September 2015",
+    contractId: "CDCUGTD3OPX3N474CKHQJRO2EWPNGYDZSV5MC3QJV3XRJHLGXCFMXSVO",
+  }
+} as const
 
 
 
@@ -71,6 +77,17 @@ export interface Client {
    * actions, and the 72h auto-expiry bounds the cost of a bad trigger.
    */
   pause: ({guardian}: {guardian: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
+   * Construct and simulate a extend transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Only the configured admin can extend an *active* pause before it
+   * auto-expires, capped at `MAX_EXTENSIONS` real extensions so a
+   * guardian trip can't be held open indefinitely by repeated admin
+   * extensions. Same auth shape as `resume_early` (this contract has no
+   * separate multisig of its own; that composes one layer up at the
+   * vault's smart account, same as `resume_early`'s own comment notes).
+   */
+  extend: ({admin}: {admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
    * Construct and simulate a status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -130,8 +147,10 @@ export class Client extends ContractClient {
     super(
       new ContractSpec([ "AAAABQAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAQAAAAZwYXVzZWQAAAAAAAIAAAAAAAAAB3RyaWdnZXIAAAAH0AAAAAxQYXVzZVRyaWdnZXIAAAABAAAAAAAAAAxwYXVzZV9leHBpcnkAAAAGAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAAB1Jlc3VtZWQAAAAAAQAAAAdyZXN1bWVkAAAAAAEAAAAAAAAABWVhcmx5AAAAAAAAAQAAAAEAAAAC",
+        "AAAABQAAAAAAAAAAAAAACEV4dGVuZGVkAAAAAQAAAAhleHRlbmRlZAAAAAIAAAAAAAAAD2V4dGVuc2lvbnNfdXNlZAAAAAAEAAAAAQAAAAAAAAAMcGF1c2VfZXhwaXJ5AAAABgAAAAAAAAAC",
         "AAAAAAAAAL5BbnkgZ3VhcmRpYW4gaW4gdGhlIGNvbmZpZ3VyZWQgc2V0IGNhbiB0cmlnZ2VyIHRoaXMuIENoZWFwIGFuZApicm9hZCBvbiBwdXJwb3NlOiBmYWxzZSBwb3NpdGl2ZXMgb25seSBibG9jayByaXNrLWluY3JlYXNpbmcKYWN0aW9ucywgYW5kIHRoZSA3MmggYXV0by1leHBpcnkgYm91bmRzIHRoZSBjb3N0IG9mIGEgYmFkIHRyaWdnZXIuAAAAAAAFcGF1c2UAAAAAAAABAAAAAAAAAAhndWFyZGlhbgAAABMAAAAA",
         "AAAAAgAAAAAAAAAAAAAADFBhdXNlVHJpZ2dlcgAAAAMAAAAAAAAAAAAAAAhHdWFyZGlhbgAAAAAAAAAAAAAACk9yYWNsZUF1dG8AAAAAAAAAAAAAAAAACkJlaGF2aW9yYWwAAA==",
+        "AAAAAAAAAYZPbmx5IHRoZSBjb25maWd1cmVkIGFkbWluIGNhbiBleHRlbmQgYW4gKmFjdGl2ZSogcGF1c2UgYmVmb3JlIGl0CmF1dG8tZXhwaXJlcywgY2FwcGVkIGF0IGBNQVhfRVhURU5TSU9OU2AgcmVhbCBleHRlbnNpb25zIHNvIGEKZ3VhcmRpYW4gdHJpcCBjYW4ndCBiZSBoZWxkIG9wZW4gaW5kZWZpbml0ZWx5IGJ5IHJlcGVhdGVkIGFkbWluCmV4dGVuc2lvbnMuIFNhbWUgYXV0aCBzaGFwZSBhcyBgcmVzdW1lX2Vhcmx5YCAodGhpcyBjb250cmFjdCBoYXMgbm8Kc2VwYXJhdGUgbXVsdGlzaWcgb2YgaXRzIG93bjsgdGhhdCBjb21wb3NlcyBvbmUgbGF5ZXIgdXAgYXQgdGhlCnZhdWx0J3Mgc21hcnQgYWNjb3VudCwgc2FtZSBhcyBgcmVzdW1lX2Vhcmx5YCdzIG93biBjb21tZW50IG5vdGVzKS4AAAAAAAZleHRlbmQAAAAAAAEAAAAAAAAABWFkbWluAAAAAAAAEwAAAAA=",
         "AAAAAAAAAHFzdGF0dXMoKSBjb21wdXRlcyBwYXVzZWQgJiYgbm93IDwgcGF1c2VfZXhwaXJ5IGxhemlseSDigJQgbm8ga2VlcGVyCm5lZWRlZCB0byB1bi1wYXVzZSwgdGhlIGxlZGdlciBjbG9jayBkb2VzIGl0LgAAAAAAAAZzdGF0dXMAAAAAAAAAAAABAAAAAQ==",
         "AAAAAAAAAAAAAAAJZ3VhcmRpYW5zAAAAAAAAAAAAAAEAAAPqAAAAEw==",
         "AAAAAAAAALxBZGRzIG9uZSBndWFyZGlhbiB3aXRob3V0IGRpc3R1cmJpbmcgdGhlIHJlc3Qgb2YgdGhlIHJvc3RlciwgYQpyZWFsIGNhcGFiaWxpdHkgdGhlIG9sZCBoYW5kLXJvbGxlZCBgVmVjPEFkZHJlc3M+YCBuZXZlciBoYWQgKGl0CmNvdWxkIG9ubHkgZXZlciBiZSByZXBsYWNlZCB3aG9sZXNhbGUgdmlhIGBpbml0X2d1YXJkaWFuc2ApLgAAAAxhZGRfZ3VhcmRpYW4AAAACAAAAAAAAAAVhZG1pbgAAAAAAABMAAAAAAAAACGd1YXJkaWFuAAAAEwAAAAA=",
@@ -147,6 +166,7 @@ export class Client extends ContractClient {
   }
   public readonly fromJSON = {
     pause: this.txFromJSON<null>,
+        extend: this.txFromJSON<null>,
         status: this.txFromJSON<boolean>,
         guardians: this.txFromJSON<Array<string>>,
         add_guardian: this.txFromJSON<null>,

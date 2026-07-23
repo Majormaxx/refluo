@@ -7,11 +7,15 @@
 //! not just one, so it can't flap. Modeled on Lido's GateSeal. Full spec
 //! tracked internally, not in this repo.
 //!
-//! `pause`/`resume_early` are real now (not stubs): RiskEngine's Paused
-//! transition cross-calls `status()`, and a status() that could only ever
-//! return false would make that transition untestable in spirit, even
-//! though the code compiles. `extend`/`tick_recovery`/`check_and_trip`
-//! remain genuinely unbuilt, stated as such, not faked.
+//! `pause`/`resume_early`/`extend` are real now (not stubs): RiskEngine's
+//! Paused transition cross-calls `status()`, and a status() that could only
+//! ever return false would make that transition untestable in spirit, even
+//! though the code compiles. `extend` reuses `resume_early`'s exact admin
+//! auth shape and independently re-checks the pause is still live (not just
+//! trusting the stored flag), since `pause()` has no re-pause guard and
+//! could otherwise let an admin "resurrect" a lapsed pause through the
+//! extension path. `tick_recovery`/`check_and_trip` remain genuinely
+//! unbuilt, stated as such, not faked.
 //!
 //! Guardian membership and the admin record are OZ's real, audited
 //! `stellar-access` `AccessControl` primitive (adr/0020), not a
@@ -57,7 +61,6 @@ pub enum DataKey {
 }
 
 const MAX_PAUSE_DURATION: u64 = 72 * 3600;
-#[allow(dead_code)]
 const MAX_EXTENSIONS: u32 = 2;
 
 #[contractevent]
@@ -73,6 +76,14 @@ pub struct Paused {
 pub struct Resumed {
     #[topic]
     pub early: bool,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Extended {
+    #[topic]
+    pub extensions_used: u32,
+    pub pause_expiry: u64,
 }
 
 #[contract]
@@ -171,7 +182,54 @@ impl HealthMonitor {
         Resumed { early: true }.publish(&e);
     }
 
-    // extend / check_and_trip / tick_recovery: not yet implemented.
+    /// Only the configured admin can extend an *active* pause before it
+    /// auto-expires, capped at `MAX_EXTENSIONS` real extensions so a
+    /// guardian trip can't be held open indefinitely by repeated admin
+    /// extensions. Same auth shape as `resume_early` (this contract has no
+    /// separate multisig of its own; that composes one layer up at the
+    /// vault's smart account, same as `resume_early`'s own comment notes).
+    pub fn extend(e: Env, admin: Address) {
+        admin.require_auth();
+
+        let stored_admin =
+            ac::get_admin(&e).unwrap_or_else(|| panic_with_error!(e, CommonError::NotInitialized));
+        if admin != stored_admin {
+            panic_with_error!(e, CommonError::Unauthorized);
+        }
+
+        let mut state: PauseState = e
+            .storage()
+            .instance()
+            .get(&DataKey::Pause)
+            .unwrap_or_else(|| panic_with_error!(e, CommonError::NotInitialized));
+
+        // pause() has no re-pause guard and unconditionally overwrites this
+        // same state, so extend() must independently confirm there's a real,
+        // still-live pause to extend rather than trust the stored flag alone
+        // — status() itself checks both paused and now < pause_expiry
+        // (see status() above), extend() must too.
+        if !state.paused {
+            panic_with_error!(e, CommonError::BadState);
+        }
+        if e.ledger().timestamp() >= state.pause_expiry {
+            panic_with_error!(e, CommonError::BadState);
+        }
+        if state.extensions_used >= MAX_EXTENSIONS {
+            panic_with_error!(e, CommonError::CapExceeded);
+        }
+
+        let expiry = e.ledger().timestamp() + MAX_PAUSE_DURATION; // fresh 72h, not additive
+        state.pause_expiry = expiry;
+        state.extensions_used += 1;
+        e.storage().instance().set(&DataKey::Pause, &state);
+        Extended {
+            extensions_used: state.extensions_used,
+            pause_expiry: expiry,
+        }
+        .publish(&e);
+    }
+
+    // check_and_trip / tick_recovery: not yet implemented.
     // Hysteresis constants (trip 5%, reset 1%) must never be made equal.
 }
 
@@ -367,5 +425,117 @@ mod test {
             client.status(),
             "must remain paused after a rejected resume attempt"
         );
+    }
+
+    #[test]
+    fn admin_can_extend_an_active_pause() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let guardian = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [guardian.clone()]));
+        client.pause(&guardian);
+
+        // Fast-forward close to (but before) auto-expiry, confirming the
+        // extension really moves pause_expiry forward from now, not merely
+        // adding a fixed offset to whatever was left.
+        e.ledger()
+            .with_mut(|l| l.timestamp += MAX_PAUSE_DURATION - 10);
+        assert!(client.status(), "still paused just before auto-expiry");
+
+        client.extend(&admin);
+        assert!(client.status(), "extension must keep the pause active");
+
+        // The pre-extension expiry would have lapsed by now; a fresh 72h
+        // from the extend() call should not have.
+        e.ledger().with_mut(|l| l.timestamp += 20);
+        assert!(
+            client.status(),
+            "extend() must grant a real fresh window, not just a few seconds"
+        );
+    }
+
+    #[test]
+    fn extend_is_rejected_when_not_currently_paused() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, []));
+
+        let result = client.try_extend(&admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extend_is_rejected_once_the_pause_has_already_auto_expired() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let guardian = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [guardian.clone()]));
+        client.pause(&guardian);
+
+        e.ledger()
+            .with_mut(|l| l.timestamp += MAX_PAUSE_DURATION + 1);
+        assert!(!client.status(), "must have lazily auto-expired");
+
+        // A lapsed pause must go back through pause()'s guardian gate, not
+        // be "resurrected" by extend()'s admin gate.
+        let result = client.try_extend(&admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extend_is_capped_at_max_extensions() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let guardian = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [guardian.clone()]));
+        client.pause(&guardian);
+
+        client.extend(&admin);
+        client.extend(&admin);
+        assert!(client.status(), "still paused after 2 real extensions");
+
+        let result = client.try_extend(&admin);
+        assert!(
+            result.is_err(),
+            "a 3rd extension must exceed MAX_EXTENSIONS"
+        );
+    }
+
+    #[test]
+    fn non_admin_cannot_extend() {
+        let e = Env::default();
+        advance_to_realistic_ledger(&e);
+        let contract_id = e.register(HealthMonitor, ());
+        let client = HealthMonitorClient::new(&e, &contract_id);
+
+        let admin = Address::generate(&e);
+        let guardian = Address::generate(&e);
+        let outsider = Address::generate(&e);
+        e.mock_all_auths();
+        client.init_guardians(&admin, &Vec::from_array(&e, [guardian.clone()]));
+        client.pause(&guardian);
+
+        let result = client.try_extend(&outsider);
+        assert!(result.is_err());
     }
 }

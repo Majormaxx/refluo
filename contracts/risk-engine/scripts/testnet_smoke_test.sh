@@ -17,12 +17,44 @@
 # exercised here; it's covered in the unit test suite against a real
 # Stellar Asset Contract test double instead. Every other transition,
 # including every rejection, is driven end to end against real contracts.
+#
+# Also covers HealthMonitor.extend() (real pause/extend/cap-out cycle,
+# confirming the real Extended event's topic/value shape) and
+# RiskEngine.record_tier1_position()'s real cap enforcement (previously
+# nothing checked tvl_cap at all) — including the regression case that
+# would fail against the naive "current total + amount" formula: updating
+# an *existing* venue's own position must be judged against the total
+# excluding that venue's stale value, not double-counting it.
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
 
+# Real, observed flakiness even against a dedicated (non-public) RPC
+# provider: a rapid sequence of this many real on-chain calls occasionally
+# hits a transient client-side cancellation/timeout. Retrying the real
+# `stellar` binary transparently (shadowing it as a function) hardens every
+# call expected to succeed, without changing what each call actually does.
+# `expect_err` below calls the real binary directly instead, bypassing this
+# wrapper: a deterministic contract-level rejection (wrong signer, over
+# cap, cap already reached) isn't a transient failure, retrying it would
+# just burn wall-clock time re-confirming the same real rejection.
+STELLAR_BIN=$(command -v stellar)
+stellar() {
+  local attempts=20 delay=10 i
+  for ((i = 1; i <= attempts; i++)); do
+    if "$STELLAR_BIN" "$@"; then
+      return 0
+    fi
+    if [ "$i" -lt "$attempts" ]; then
+      echo "    (retrying after a transient error, attempt $i/$attempts)" >&2
+      sleep "$delay"
+    fi
+  done
+  return 1
+}
+
 IDENTITY="${1:-refluo-testnet}"
-ACCOUNT=$(stellar keys address "$IDENTITY")
+ACCOUNT=$("$STELLAR_BIN" keys address "$IDENTITY")
 
 # Already-deployed, live-verified OracleRouter configured for XLM against
 # real Reflector and RedStone testnet feeds (see
@@ -81,6 +113,14 @@ check() {
 }
 expect_err() {
   local desc="$1"; shift
+  # Bypasses the retry wrapper above on purpose: a deterministic
+  # contract-level rejection isn't a transient failure, and blindly
+  # retrying it would just burn wall-clock time re-confirming the same
+  # real rejection every attempt.
+  if [ "$1" = "stellar" ]; then
+    shift
+    set -- "$STELLAR_BIN" "$@"
+  fi
   if "$@" >/tmp/re_smoke_err 2>&1; then
     echo "    FAIL: $desc (expected rejection, call succeeded)"
     fail=$((fail + 1))
@@ -145,6 +185,38 @@ PREEMPTIVE=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --networ
 FULL_DRAIN=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- config --account "$ACCOUNT" 2>&1 | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['full_drain_util_bps'])")
 check "Aggressive profile resolves to preemptive_util_bps=9000, not the caller's 1" "9000" "$PREEMPTIVE"
 check "Aggressive profile resolves to full_drain_util_bps=9700, not the caller's 2" "9700" "$FULL_DRAIN"
+
+echo "==> [7] HealthMonitor.extend(): real pause/extend/cap cycle"
+stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- pause --guardian "$ACCOUNT" >/dev/null
+stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- extend --admin "$ACCOUNT" >/dev/null
+stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- extend --admin "$ACCOUNT" >/dev/null
+STATUS=$(stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet -- status 2>&1 | tail -1)
+check "still paused after 2 real extensions" "true" "$STATUS"
+expect_err "a 3rd real extension exceeds MAX_EXTENSIONS" \
+  stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- extend --admin "$ACCOUNT"
+stellar contract invoke --id "$HM_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- resume_early --admin "$ACCOUNT" >/dev/null
+
+echo "==> [8] record_tier1_position: real cap enforcement (previously nothing checked this at all)"
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- init --account "$ACCOUNT" --cfg "$CFG" --tier0_target "10000000000" >/dev/null
+VENUE_A=$(stellar keys address "$IDENTITY")
+VENUE_B="GDSVR2C3PPWI3EWHLBFADKTUNRWI6GIVIINJOHZDRKM3OEF6CVHEX5YP"
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- record_tier1_position --account "$ACCOUNT" --keeper "$ACCOUNT" --venue "$VENUE_B" --amount "500000000000" >/dev/null
+expect_err "a fresh deployment that alone breaches tvl_cap is rejected" \
+  stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- record_tier1_position --account "$ACCOUNT" --keeper "$ACCOUNT" --venue "$VENUE_A" --amount "600000000000"
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- record_tier1_position --account "$ACCOUNT" --keeper "$ACCOUNT" --venue "$VENUE_B" --amount "950000000000" >/dev/null
+POSITION=$(stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet -- tier_state --account "$ACCOUNT" 2>&1 | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['tier1_positions']['$VENUE_B'])")
+check "updating an existing venue's own position uses the corrected total (950B), not the naive stale-total formula that would have rejected it" "950000000000" "$POSITION"
+stellar contract invoke --id "$RE_ID" --source "$IDENTITY" --network testnet --send=yes \
+  -- record_tier1_position --account "$ACCOUNT" --keeper "$ACCOUNT" --venue "$VENUE_B" --amount "0" >/dev/null
 
 echo ""
 echo "==> $pass passed, $fail failed"

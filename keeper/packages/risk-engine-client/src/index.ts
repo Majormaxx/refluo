@@ -31,7 +31,12 @@ if (typeof window !== "undefined") {
 }
 
 
-
+export const networks = {
+  testnet: {
+    networkPassphrase: "Test SDF Network ; September 2015",
+    contractId: "CDEGC5DI7R3GCKGUDRN3XIY5FWIKSGLW4UBVK4RMPWFAS3CWKV5BWZ5C",
+  }
+} as const
 
 export type DataKey = {tag: "Config", values: readonly [string]} | {tag: "State", values: readonly [string]} | {tag: "Tier", values: readonly [string]} | {tag: "FeeBps", values: void} | {tag: "Admin", values: void};
 
@@ -248,6 +253,21 @@ export interface Client {
 
   /**
    * Construct and simulate a record_tier1_position transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Real enforcement of the same guarantee `deploy_allowed` advertises —
+   * this used to be purely advisory (nothing here checked `tvl_cap` or
+   * `SystemState` at all, any caller that skipped the `deploy_allowed`
+   * pre-check could push a position arbitrarily high). Rejects for real
+   * now, reusing `RiskError::CapExceeded` for both reasons
+   * `deploy_allowed` already conflates into a single bool (over-cap, or
+   * state not Normal) rather than inventing a new variant to
+   * distinguish them.
+   * 
+   * The cap check here is deliberately *not* `deploy_allowed`'s own
+   * formula: this function *sets* (not increments) `venue`'s position,
+   * so the real new total is every *other* venue's current position plus
+   * `amount` — reusing `deploy_allowed`'s "current total + amount"
+   * formula unmodified would double-count `venue`'s own stale value on
+   * every update to an existing position, not just a fresh deployment.
    */
   record_tier1_position: ({account, keeper, venue, amount}: {account: string, keeper: string, venue: string, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
@@ -291,7 +311,7 @@ export class Client extends ContractClient {
         "AAAAAwAAAPpNaXJyb3JzIG9yYWNsZS1yb3V0ZXIncyBPcmFjbGVTdGF0dXMuIENyb3NzLWNvbnRyYWN0IGNhbGxzIGFyZQpzdHJ1Y3R1cmFsIChYRFItbGV2ZWwpLCBzbyB0aGlzIGxvY2FsIG1pcnJvciBpcyBjb3JyZWN0IGFzIGxvbmcgYXMgdGhlCmZpZWxkIGxheW91dCBtYXRjaGVzIOKAlCB0aGUgc2FtZSBwcmluY2lwbGUgYXMgQmxlbmRSZXF1ZXN0IGFuZCB0aGUKcGVyLWZlZWQgQXNzZXQgaGFuZGxpbmcgaW4gb3JhY2xlLXJvdXRlciBpdHNlbGYuAAAAAAAAAAAAFE1pcnJvcmVkT3JhY2xlU3RhdHVzAAAABAAAAAAAAAAHSGVhbHRoeQAAAAAAAAAAAAAAAAdPbmVGZWVkAAAAAAEAAAAAAAAACERlZ3JhZGVkAAAAAgAAAAAAAAAISGFyZFN0b3AAAAAD",
         "AAAAAAAAAdhTYW1lIGFzIGBpbml0YCwgZXhjZXB0IGBwcmVlbXB0aXZlX3V0aWxfYnBzYC9gZnVsbF9kcmFpbl91dGlsX2Jwc2AKb24gYGNmZ2AgYXJlIG92ZXJ3cml0dGVuIGJ5IGBwcm9maWxlYCdzIHJlYWwgcHJlc2V0IHRocmVzaG9sZHMKcmF0aGVyIHRoYW4gdHJ1c3RlZCBmcm9tIHRoZSBjYWxsZXI7IGV2ZXJ5IG90aGVyIGZpZWxkIChhZGRyZXNzZXMsCmB0dmxfY2FwYCwgYGNyaXRpY2FsX2Zsb29yYCwgYHRpZXIwX2JvdW5kc19taW5gL2BtYXhgKSBpcyB1c2VkIGFzCmdpdmVuLCBzaW5jZSBub25lIG9mIGl0IGlzIGEgZnVuY3Rpb24gb2YgcmlzayBhcHBldGl0ZS4gTGV0cyBhCmNhbGxlciByZXVzZSB0aGUgZXhhY3Qgc2FtZSBgVGllckNvbmZpZ2Agc2hhcGUgYGluaXRgIHRha2VzLApuYW1pbmcgYSByaXNrIHByb2ZpbGUgaW5zdGVhZCBvZiB0eXBpbmcgYnBzIHZhbHVlcyBieSBoYW5kIGZvcgpqdXN0IHRob3NlIHR3byBmaWVsZHMuAAAAEWluaXRfd2l0aF9wcm9maWxlAAAAAAAABAAAAAAAAAAHYWNjb3VudAAAAAATAAAAAAAAAAdwcm9maWxlAAAAB9AAAAALUmlza1Byb2ZpbGUAAAAAAAAAAANjZmcAAAAH0AAAAApUaWVyQ29uZmlnAAAAAAAAAAAADHRpZXIwX3RhcmdldAAAAAsAAAAA",
         "AAAAAAAAAPtUaGUgb25seSBwYXRoIHRoYXQgbW92ZXMgc3RhdGUgdG8gYSBsZXNzIGNvbnNlcnZhdGl2ZSBsZXZlbCwgb3IKdHJpZ2dlcnMgUHJlZW1wdGl2ZURyYWluIHZpYSBrZWVwZXItYXR0ZXN0ZWQgdXRpbGl6YXRpb24gcmF0aGVyCnRoYW4gb3JhY2xlIHN0YXR1cy4gRXZlcnkgZG93bndhcmQgbW92ZSByZXF1aXJlcyB0aGUgb3JhY2xlIHRvIGJlCmdlbnVpbmVseSBIZWFsdGh5IHJpZ2h0IG5vdywgdmVyaWZpZWQgbGl2ZSwgbm90IGFzc2VydGVkLgAAAAAUa2VlcGVyX2FkdmFuY2Vfc3RhdGUAAAAEAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABmtlZXBlcgAAAAAAEwAAAAAAAAACdG8AAAAAB9AAAAALU3lzdGVtU3RhdGUAAAAAAAAAAA91dGlsaXphdGlvbl9icHMAAAAD6AAAAAQAAAAA",
-        "AAAAAAAAAAAAAAAVcmVjb3JkX3RpZXIxX3Bvc2l0aW9uAAAAAAAABAAAAAAAAAAHYWNjb3VudAAAAAATAAAAAAAAAAZrZWVwZXIAAAAAABMAAAAAAAAABXZlbnVlAAAAAAAAEwAAAAAAAAAGYW1vdW50AAAAAAALAAAAAA==",
+        "AAAAAAAAA2ZSZWFsIGVuZm9yY2VtZW50IG9mIHRoZSBzYW1lIGd1YXJhbnRlZSBgZGVwbG95X2FsbG93ZWRgIGFkdmVydGlzZXMg4oCUCnRoaXMgdXNlZCB0byBiZSBwdXJlbHkgYWR2aXNvcnkgKG5vdGhpbmcgaGVyZSBjaGVja2VkIGB0dmxfY2FwYCBvcgpgU3lzdGVtU3RhdGVgIGF0IGFsbCwgYW55IGNhbGxlciB0aGF0IHNraXBwZWQgdGhlIGBkZXBsb3lfYWxsb3dlZGAKcHJlLWNoZWNrIGNvdWxkIHB1c2ggYSBwb3NpdGlvbiBhcmJpdHJhcmlseSBoaWdoKS4gUmVqZWN0cyBmb3IgcmVhbApub3csIHJldXNpbmcgYFJpc2tFcnJvcjo6Q2FwRXhjZWVkZWRgIGZvciBib3RoIHJlYXNvbnMKYGRlcGxveV9hbGxvd2VkYCBhbHJlYWR5IGNvbmZsYXRlcyBpbnRvIGEgc2luZ2xlIGJvb2wgKG92ZXItY2FwLCBvcgpzdGF0ZSBub3QgTm9ybWFsKSByYXRoZXIgdGhhbiBpbnZlbnRpbmcgYSBuZXcgdmFyaWFudCB0bwpkaXN0aW5ndWlzaCB0aGVtLgoKVGhlIGNhcCBjaGVjayBoZXJlIGlzIGRlbGliZXJhdGVseSAqbm90KiBgZGVwbG95X2FsbG93ZWRgJ3Mgb3duCmZvcm11bGE6IHRoaXMgZnVuY3Rpb24gKnNldHMqIChub3QgaW5jcmVtZW50cykgYHZlbnVlYCdzIHBvc2l0aW9uLApzbyB0aGUgcmVhbCBuZXcgdG90YWwgaXMgZXZlcnkgKm90aGVyKiB2ZW51ZSdzIGN1cnJlbnQgcG9zaXRpb24gcGx1cwpgYW1vdW50YCDigJQgcmV1c2luZyBgZGVwbG95X2FsbG93ZWRgJ3MgImN1cnJlbnQgdG90YWwgKyBhbW91bnQiCmZvcm11bGEgdW5tb2RpZmllZCB3b3VsZCBkb3VibGUtY291bnQgYHZlbnVlYCdzIG93biBzdGFsZSB2YWx1ZSBvbgpldmVyeSB1cGRhdGUgdG8gYW4gZXhpc3RpbmcgcG9zaXRpb24sIG5vdCBqdXN0IGEgZnJlc2ggZGVwbG95bWVudC4AAAAAABVyZWNvcmRfdGllcjFfcG9zaXRpb24AAAAAAAAEAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABmtlZXBlcgAAAAAAEwAAAAAAAAAFdmVudWUAAAAAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAAA",
         "AAAAAgAAAApBc3NldCB0eXBlAAAAAAAAAAAABUFzc2V0AAAAAAAAAgAAAAEAAAAAAAAAB1N0ZWxsYXIAAAAAAQAAABMAAAABAAAAAAAAAAVPdGhlcgAAAAAAAAEAAAAR",
         "AAAAAQAAAC9QcmljZSBkYXRhIGZvciBhbiBhc3NldCBhdCBhIHNwZWNpZmljIHRpbWVzdGFtcAAAAAAAAAAACVByaWNlRGF0YQAAAAAAAAIAAAAAAAAABXByaWNlAAAAAAAACwAAAAAAAAAJdGltZXN0YW1wAAAAAAAABg==" ]),
       options

@@ -7,3 +7,5 @@ packages/*/dist/
 .keeper-metrics.jsonl
 .reporter-snapshot.json
 .reporter-smoke-*
+.alert-dispatcher-state.json
+.alert-dispatcher-smoke-*

@@ -266,6 +266,21 @@ impl RiskEngine {
         e.storage().persistent().set(&DataKey::Tier(account), &tier);
     }
 
+    /// Real enforcement of the same guarantee `deploy_allowed` advertises —
+    /// this used to be purely advisory (nothing here checked `tvl_cap` or
+    /// `SystemState` at all, any caller that skipped the `deploy_allowed`
+    /// pre-check could push a position arbitrarily high). Rejects for real
+    /// now, reusing `RiskError::CapExceeded` for both reasons
+    /// `deploy_allowed` already conflates into a single bool (over-cap, or
+    /// state not Normal) rather than inventing a new variant to
+    /// distinguish them.
+    ///
+    /// The cap check here is deliberately *not* `deploy_allowed`'s own
+    /// formula: this function *sets* (not increments) `venue`'s position,
+    /// so the real new total is every *other* venue's current position plus
+    /// `amount` — reusing `deploy_allowed`'s "current total + amount"
+    /// formula unmodified would double-count `venue`'s own stale value on
+    /// every update to an existing position, not just a fresh deployment.
     pub fn record_tier1_position(
         e: Env,
         account: Address,
@@ -278,7 +293,20 @@ impl RiskEngine {
         if keeper != cfg.keeper {
             panic_with_error!(e, RiskError::Unauthorized);
         }
+        let state: SystemState = Self::state(e.clone(), account.clone());
+        if state != SystemState::Normal {
+            panic_with_error!(e, RiskError::CapExceeded);
+        }
         let mut tier = Self::tier_state(e.clone(), account.clone());
+        let total_other_venues: i128 = tier
+            .tier1_positions
+            .iter()
+            .filter(|(v, _)| v != &venue)
+            .map(|(_, a)| a)
+            .sum();
+        if total_other_venues.saturating_add(amount) > cfg.tvl_cap {
+            panic_with_error!(e, RiskError::CapExceeded);
+        }
         tier.tier1_positions.set(venue, amount);
         e.storage().persistent().set(&DataKey::Tier(account), &tier);
     }
@@ -815,6 +843,102 @@ mod test {
         f.risk.check_and_trip(&f.account);
         assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
         assert!(!f.risk.deploy_allowed(&f.account, &1));
+    }
+
+    // ################## record_tier1_position: real cap enforcement ##################
+
+    #[test]
+    fn record_tier1_position_rejects_a_fresh_deployment_that_would_breach_the_cap() {
+        let e = Env::default();
+        let f = setup(&e);
+        let venue = Address::generate(&e);
+        // tvl_cap is 1_000_000_000_000; this single fresh deployment alone
+        // breaches it.
+        let result =
+            f.risk
+                .try_record_tier1_position(&f.account, &f.keeper, &venue, &1_000_000_000_001);
+        assert!(result.is_err());
+        assert!(f.risk.tier_state(&f.account).tier1_positions.is_empty());
+    }
+
+    #[test]
+    fn record_tier1_position_rejects_a_genuine_breach_across_multiple_venues() {
+        let e = Env::default();
+        let f = setup(&e);
+        let venue_a = Address::generate(&e);
+        let venue_b = Address::generate(&e);
+        f.risk
+            .record_tier1_position(&f.account, &f.keeper, &venue_a, &600_000_000_000);
+
+        // venue_b's own deployment is fine in isolation, but combined with
+        // venue_a's real existing position it breaches the real cap.
+        let result =
+            f.risk
+                .try_record_tier1_position(&f.account, &f.keeper, &venue_b, &500_000_000_000);
+        assert!(result.is_err());
+        assert!(!f
+            .risk
+            .tier_state(&f.account)
+            .tier1_positions
+            .contains_key(venue_b));
+    }
+
+    #[test]
+    fn record_tier1_position_evaluates_an_existing_venues_update_against_the_corrected_total_not_the_naive_one(
+    ) {
+        // The exact gap the naive "current total + amount" formula
+        // (deploy_allowed's own formula) misses: it doesn't account for
+        // record_tier1_position *setting*, not incrementing, a venue's
+        // position. Updating an existing venue's own position must be
+        // judged against the total excluding that venue's stale value, not
+        // double-counting it.
+        let e = Env::default();
+        let f = setup(&e);
+        let venue = Address::generate(&e);
+        f.risk
+            .record_tier1_position(&f.account, &f.keeper, &venue, &900_000_000_000);
+
+        // Real new total (no other venues) is 950B, comfortably under the
+        // 1_000_000_000_000 cap. The naive formula would have computed
+        // 900B (stale total) + 950B (new amount) = 1_850B and wrongly
+        // rejected this.
+        f.risk
+            .record_tier1_position(&f.account, &f.keeper, &venue, &950_000_000_000);
+        assert_eq!(
+            f.risk
+                .tier_state(&f.account)
+                .tier1_positions
+                .get(venue)
+                .unwrap(),
+            950_000_000_000
+        );
+    }
+
+    #[test]
+    fn record_tier1_position_rejects_when_state_is_not_normal() {
+        let e = Env::default();
+        let f = setup(&e);
+        let venue = Address::generate(&e);
+        f.oracle.set_status(&MirroredOracleStatus::Degraded);
+        f.risk.check_and_trip(&f.account);
+        assert_eq!(f.risk.state(&f.account), SystemState::Emergency);
+
+        let result = f
+            .risk
+            .try_record_tier1_position(&f.account, &f.keeper, &venue, &1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn non_keeper_cannot_record_tier1_position() {
+        let e = Env::default();
+        let f = setup(&e);
+        let venue = Address::generate(&e);
+        let outsider = Address::generate(&e);
+        let result =
+            f.risk
+                .try_record_tier1_position(&f.account, &outsider, &venue, &1_000_000_000);
+        assert!(result.is_err());
     }
 
     // ################## check_and_trip: REAL cross-contract checks ##################

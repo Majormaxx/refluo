@@ -46,3 +46,4 @@ next-env.d.ts
 .alerts-config.json
 .smoke-alerts-config.json
 .reporter-snapshot.json
+.smoke-reporter-snapshot.json
