@@ -8,6 +8,7 @@
 import type { VaultOverview } from "./contracts/vaultOverview";
 import type { GuardianPanelData } from "./contracts/healthMonitor";
 import type { SlaSnapshot } from "./telemetry";
+import { formatStroops } from "./formatAmount";
 
 export interface ChecklistItem {
   key: string;
@@ -47,7 +48,7 @@ export function evaluateGoLiveChecklist(input: ChecklistInput): ChecklistItem[] 
       key: "tier0Funded",
       label: "Tier 0 funded above the critical floor",
       passed: fundedAboveFloor,
-      detail: `${vaultOverview.usdcBalance} / ${vaultOverview.criticalFloor} stroops (USDC balance / critical floor)`,
+      detail: `${formatStroops(vaultOverview.usdcBalance, "USDC")} / ${formatStroops(vaultOverview.criticalFloor, "USDC")} (USDC balance / critical floor)`,
     },
     {
       key: "guardianConfigured",

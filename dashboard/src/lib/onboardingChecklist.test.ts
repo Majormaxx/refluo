@@ -100,6 +100,7 @@ test("slaTelemetryReachable passes once a real snapshot exists", () => {
         windowStartSeconds: 0,
         windowEndSeconds: 1,
         tier0HitRate: 1,
+        agentUptime: 1,
         pauseStats: { pauseCount: 0, totalPauseDurationSeconds: 0 },
         recallLatency: { count: 0, p50Seconds: 0, p95Seconds: 0, p99Seconds: 0, buckets: [] },
         forecasterError: { count: 0, meanAbsErrorStroopsPerHour: 0, meanAbsPercentError: 0, p99AbsErrorStroopsPerHour: 0 },

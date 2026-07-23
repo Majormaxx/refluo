@@ -12,8 +12,8 @@ import {
 import { PanelError } from "@/components/PanelError";
 import { PanelSkeleton } from "@/components/PanelSkeleton";
 import { useApiResource } from "@/hooks/useApiResource";
-import { SYSTEM_STATE_STYLE } from "@/lib/systemStateStyle";
-import { cn } from "@/lib/utils";
+import { SystemStateBadge } from "@/components/SystemStateBadge";
+import { formatStroops } from "@/lib/formatAmount";
 import type { VaultOverview } from "@/lib/contracts/vaultOverview";
 
 export function VaultOverviewPanel() {
@@ -33,14 +33,7 @@ export function VaultOverviewPanel() {
             <div className="flex flex-wrap items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">System state</span>
-                <span
-                  className={cn(
-                    "rounded-full px-2.5 py-0.5 text-xs font-medium",
-                    SYSTEM_STATE_STYLE[data.systemState].badgeClassName,
-                  )}
-                >
-                  {SYSTEM_STATE_STYLE[data.systemState].label}
-                </span>
+                <SystemStateBadge state={data.systemState} />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">Risk profile</span>
@@ -50,17 +43,19 @@ export function VaultOverviewPanel() {
               </div>
               <div>
                 <span className="text-muted-foreground">Tier 0 target</span>{" "}
-                {data.tier0Target} stroops
+                {formatStroops(data.tier0Target, "USDC")}
               </div>
               <div>
-                <span className="text-muted-foreground">USDC balance</span> {data.usdcBalance} stroops
+                <span className="text-muted-foreground">USDC balance</span>{" "}
+                {formatStroops(data.usdcBalance, "USDC")}
               </div>
               <div>
-                <span className="text-muted-foreground">XLM balance</span> {data.xlmBalance} stroops
+                <span className="text-muted-foreground">XLM balance</span>{" "}
+                {formatStroops(data.xlmBalance, "XLM")}
               </div>
               <div>
                 <span className="text-muted-foreground">Critical floor</span>{" "}
-                {data.criticalFloor} stroops
+                {formatStroops(data.criticalFloor, "USDC")}
               </div>
             </div>
 
@@ -70,7 +65,7 @@ export function VaultOverviewPanel() {
                 <ul className="space-y-1 text-sm">
                   {data.tier1Positions.map((p) => (
                     <li key={p.venue}>
-                      <code className="text-xs">{p.venue}</code>: {p.amount}
+                      <code className="text-xs">{p.venue}</code>: {formatStroops(p.amount, "USDC")}
                     </li>
                   ))}
                 </ul>

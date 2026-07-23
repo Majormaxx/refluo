@@ -59,9 +59,43 @@ function ChartContainer({
   const uniqueId = React.useId()
   const chartId = `chart-${id ?? uniqueId.replace(/:/g, "")}`
 
+  // Recharts' ResponsiveContainer measures its container via a real
+  // ResizeObserver (recharts/es6/component/ResponsiveContainer.js), not a
+  // window `resize` event — an earlier version of this fix dispatched a
+  // `resize` event and confirmed, by reading Recharts' own source, that
+  // it was a no-op. The real, confirmed-live failure mode: the
+  // ResizeObserver's very first callback can fire while a sibling
+  // elsewhere on the page (an independent panel's own async fetch
+  // resolving on its own schedule, not tied to any fixed number of
+  // frames) hasn't finished shifting layout yet, so the chart measures a
+  // stale, too-small size. A second, real ResizeObserver here — on the
+  // wrapper div this component itself renders — forces a fresh `key` (a
+  // fresh ResponsiveContainer, a fresh internal ResizeObserver measuring
+  // whatever the size actually is *right now*) every time that wrapper's
+  // real size changes, for as long as it keeps changing — reacting to
+  // genuine layout events instead of guessing how many paints a
+  // same-page sibling's fetch will take to settle. The observer callback
+  // calls setState from inside a real callback, not synchronously in the
+  // effect body, so this doesn't trip this project's
+  // `react-hooks/set-state-in-effect` rule.
+  const wrapperRef = React.useRef<HTMLDivElement | null>(null)
+  const [remountToken, setRemountToken] = React.useState(0)
+  React.useEffect(() => {
+    const el = wrapperRef.current
+    if (el == null || typeof ResizeObserver === "undefined") {
+      return
+    }
+    const observer = new ResizeObserver(() => {
+      setRemountToken((t) => t + 1)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   return (
     <ChartContext.Provider value={{ config }}>
       <div
+        ref={wrapperRef}
         data-slot="chart"
         data-chart={chartId}
         className={cn(
@@ -72,6 +106,7 @@ function ChartContainer({
       >
         <ChartStyle id={chartId} config={config} />
         <RechartsPrimitive.ResponsiveContainer
+          key={remountToken}
           initialDimension={initialDimension}
         >
           {children}
